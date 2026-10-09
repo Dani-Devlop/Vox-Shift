@@ -1,0 +1,12 @@
+{
+  "name": "translator-service",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot server.ts"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.2",
+    "z-ai-web-dev-sdk": "^0.0.18"
+  }
+}
