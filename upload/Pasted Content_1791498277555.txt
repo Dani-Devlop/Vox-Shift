@@ -1,0 +1,1083 @@
+VOX SHIFT — MASTER ENGINEERING PROMPT
+
+Version 1.0.0 — Functional Demo Release
+
+1. ROLE AND MISSION
+
+You are a senior full-stack engineer, audio/ML integration engineer, UI/UX designer, and QA engineer.
+
+Your mission is to upgrade the existing Vox Shift project from its current MVP into a cohesive, functional, mobile-first Version 1.0.0 demo release.
+
+This is an implementation task, not a design proposal or documentation-only task.
+
+You MUST inspect the existing repository, understand the current implementation, identify broken features, redesign the actual UI, implement the requested functionality, run tests, and deliver a working application.
+
+Do not simply describe what should be built. Build it in the existing project.
+
+Do not replace working functionality without a reason. However, if the existing UI architecture or voice pipeline prevents the required features from working correctly, refactor or rewrite the affected parts.
+
+Do not stop after generating a plan, mockup, or collection of placeholder components. Continue until the implementation and verification are complete, or clearly document any genuine external blocker.
+
+---
+
+2. PRODUCT VISION
+
+Vox Shift is a real-time, bidirectional speech translation and dubbing application.
+
+Its primary purpose is to let users communicate naturally across languages without needing to speak the other person's language.
+
+The product must support two independent translation directions:
+
+Direction A — User speaks Persian
+
+Persian speech
+→ Streaming speech recognition
+→ Natural English translation
+→ English speech generated using the user's configured voice identity
+→ Audio playback
+
+Direction B — Other person speaks English
+
+English speech
+→ Streaming speech recognition
+→ Natural Persian translation
+→ Persian speech generated using the selected output voice
+→ Audio playback
+
+The application must preserve conversation context, speaker attribution, saved settings, and conversation history.
+
+The primary initial language pair is Persian ↔ English.
+
+The architecture must support additional languages without requiring a complete rewrite.
+
+The product should eventually support video dubbing, but video dubbing is not a release-blocking requirement for Version 1.0.0.
+
+Product priorities
+
+1. Functional and genuinely integrated voice identity.
+2. Natural, accurate, conversational speech translation.
+3. Reliable bidirectional conversation handling.
+4. Persistent user settings and voice profiles.
+5. Persistent sessions and searchable conversation threads.
+6. Low latency and stable audio playback.
+7. A polished, redesigned, responsive user interface.
+8. Reliable deployment, configuration, and testing.
+
+Do not sacrifice core functionality to create decorative UI elements.
+
+---
+
+3. PHASE ZERO — INSPECT THE EXISTING PROJECT
+
+Before changing code:
+
+1. Inspect the entire existing repository and determine its framework, directory structure, package manager, backend, database, audio pipeline, and deployment environment.
+2. Identify the existing entry point, main translation screen, settings controls, voice identity implementation, API integrations, and history storage.
+3. Determine which features are genuinely functional, partially functional, mocked, hardcoded, or broken.
+4. Trace the current voice sample recording flow from microphone capture to server processing and final audio playback.
+5. Investigate why recording a custom voice sample does not change the generated voice.
+6. Inspect existing API integrations, environment variables, server logs, network requests, and error handling.
+7. Run the existing project and its available tests before making changes.
+8. Record the main defects and create an implementation checklist.
+
+Do not assume that an existing button works because it is visible.
+
+Do not assume that a voice profile works because the application displays a success message.
+
+After inspection, proceed directly to implementation. Do not wait for approval unless a genuine external decision or unavailable credential makes progress impossible.
+
+Preserve the current technology stack unless there is a compelling technical reason to change it.
+
+---
+
+4. COMPLETE UI REDESIGN
+
+The current interface must be redesigned as a cohesive product.
+
+Do not merely change colors, rename buttons, or add a settings icon while leaving the existing layout fundamentally unchanged.
+
+Use the supplied screenshots as references for the current application, not as a design that must be copied exactly.
+
+Maintain the existing dark visual identity as a starting point, with a refined, premium interface, restrained green accents, readable typography, consistent spacing, accessible controls, and responsive layouts.
+
+The application must work properly on mobile browsers, especially Android, and on desktop.
+
+Required application navigation
+
+Create a consistent navigation system with the following destinations:
+
+- Translate: Main live translation workspace.
+- Sessions: Previous conversations and recordings.
+- Voice Identity: Voice enrollment, profiles, and voice diagnostics.
+- Settings: Application-wide configuration.
+- About / Diagnostics: Version, provider status, and troubleshooting.
+
+Use a bottom navigation bar on mobile if appropriate and a sidebar or top navigation on larger screens.
+
+Add a recognizable settings button using a gear icon in the main interface.
+
+All navigation elements must lead to real pages or functional panels.
+
+Main translation screen
+
+Redesign the main screen to include:
+
+- A prominent Start / Stop control.
+- A clear microphone permission and recording state.
+- Source and target language selectors.
+- A translation direction selector.
+- A voice profile selector.
+- A live pipeline status indicator.
+- Source speech transcription.
+- Translated text.
+- Playback controls.
+- Current session identification.
+- Latency information.
+- Clear error and recovery messages.
+
+The user must be able to understand whether the system is listening, recognizing speech, translating, generating audio, or playing the result.
+
+Never display a successful translation or completed voice generation if the corresponding operation failed.
+
+Required UI states
+
+Design and implement:
+
+- Initial setup.
+- Microphone permission denied.
+- Ready to start.
+- Listening.
+- Partial transcription.
+- Translation in progress.
+- Voice generation in progress.
+- Audio playback.
+- Voice profile processing.
+- Connection lost.
+- API rate limit reached.
+- Provider unavailable.
+- Session saving.
+- Empty history.
+- Loading previous sessions.
+- Recoverable and unrecoverable errors.
+
+Provide appropriate loading indicators, disabled states, retry actions, and useful messages.
+
+---
+
+5. VOICE IDENTITY — FUNCTIONAL IMPLEMENTATION
+
+Voice identity is one of the core differentiators of Vox Shift.
+
+The current behavior is unacceptable if recording a user's voice does not change the generated audio.
+
+Do not implement a cosmetic voice identity feature.
+
+5.1 Investigate and fix the existing voice pipeline
+
+Trace this complete sequence:
+
+Record sample
+→ Upload sample
+→ Validate sample
+→ Create or enroll voice profile
+→ Store provider profile identifier
+→ Save local application profile
+→ Select the saved profile
+→ Submit translated text or audio to the actual voice provider
+→ Generate audio using that profile
+→ Play generated audio
+→ Verify the generated voice is associated with the selected profile.
+
+Every stage must be connected to the next stage.
+
+The generated audio must not silently fall back to the default demo voice when a custom profile is selected.
+
+If fallback is explicitly offered, show a warning and identify the actual voice being used.
+
+5.2 Voice enrollment workflow
+
+Create a dedicated Voice Identity page with:
+
+- Record Voice Sample.
+- Upload a permitted audio sample, if supported.
+- Recording duration and audio-quality feedback.
+- Sample validation.
+- Background noise and clipping warnings where measurable.
+- Voice enrollment progress.
+- Current processing stage.
+- Estimated remaining time when a defensible estimate exists.
+- Retry and cancel actions.
+- Test My Voice.
+- Save Profile.
+- Rename Profile.
+- Set as Default.
+- Delete Profile.
+
+Support multiple profiles where the chosen provider and architecture permit it.
+
+Allow the user to record a sample once, save the resulting profile, and reuse it across future sessions.
+
+Do not require the user to repeat voice enrollment whenever they open a new thread.
+
+5.3 Genuine voice similarity
+
+Research and evaluate reputable voice providers and recognition/voice-processing technologies using their official documentation.
+
+Compare available capabilities, including:
+
+- Reference-audio-based voice cloning.
+- Persistent speaker or voice IDs.
+- Cross-language voice cloning.
+- Multilingual text-to-speech.
+- Voice conversion where appropriate.
+- Streaming or low-latency generation.
+- Sample-duration and audio-quality requirements.
+- Voice enrollment time.
+- Pricing, quotas, regional availability, and licensing.
+
+Select a provider based on actual requirements and testable performance, not marketing claims.
+
+Keep the provider integration modular so it can be replaced later.
+
+Do not confuse speaker recognition, speaker embeddings, voice similarity analysis, voice cloning, and ordinary text-to-speech. These solve different problems.
+
+If the current provider only selects the closest preset voice, it does not satisfy the custom voice identity requirement.
+
+Replace or extend that implementation with a provider that supports the required capability.
+
+Do not invent support for voice cloning or claim that a generic preset voice is the user's cloned voice.
+
+Use only voice samples the user is authorized to provide, and make sample handling and deletion behavior explicit.
+
+5.4 Voice identity progress indicator
+
+Implement a real enrollment progress interface.
+
+Display:
+
+- Overall progress percentage.
+- Current processing stage.
+- Elapsed time.
+- Estimated remaining time, when available.
+- Completion or failure status.
+
+Possible stages:
+
+1. Waiting for recording.
+2. Recording sample.
+3. Uploading audio.
+4. Validating sample.
+5. Creating voice profile.
+6. Provider confirmation.
+7. Saving profile.
+8. Testing generated speech.
+9. Ready to use.
+
+Progress must reflect actual backend or provider job status whenever possible.
+
+If the provider supplies only asynchronous completion, use genuine job-state polling or supported callbacks.
+
+Do not fabricate a precise percentage or countdown.
+
+If exact progress cannot be measured, display an honest indeterminate progress indicator, the current stage, elapsed time, and an estimate only when historical measurements support it.
+
+For example:
+
+"Analyzing voice sample…"
+"Stage 4 of 7"
+"Elapsed: 12 seconds"
+"Estimated remaining: unavailable"
+
+Once enrollment finishes, display a clear Ready status and provide a real audio test.
+
+5.5 Verify that custom voices actually work
+
+Create an end-to-end test that:
+
+1. Creates or selects a custom voice profile.
+2. Generates speech using a fixed test sentence.
+3. Confirms the selected profile ID is sent to the correct provider.
+4. Confirms that the returned audio belongs to the generated request.
+5. Verifies that switching profiles changes the selected generation configuration.
+6. Confirms that errors are visible instead of silently returning the demo voice.
+
+Where possible, provide a side-by-side comparison between the default voice and the custom voice.
+
+Voice similarity should be evaluated using appropriate objective or perceptual methods. Do not claim an exact cloning percentage unless a validated metric and methodology support that claim.
+
+---
+
+6. GLOBAL SETTINGS AND CONFIGURATION CENTER
+
+Create a dedicated Settings page accessible through a gear icon.
+
+Settings must be real, persisted, validated, and reflected in actual application behavior.
+
+Organize the page into the following sections.
+
+6.1 General settings
+
+- Default source language.
+- Default target language.
+- Default translation direction.
+- Default content style.
+- Default playback speed.
+- Default output voice.
+- Default audio device or playback preference, where supported.
+- Automatically save conversation history.
+- Audio recording and retention preferences.
+- Application theme.
+- Language and accessibility preferences.
+
+6.2 Voice settings
+
+- Default saved voice profile.
+- Voice provider selection, if multiple providers are configured.
+- Voice generation preferences.
+- Sample quality settings.
+- Voice enrollment status.
+- Voice test controls.
+- Profile management.
+
+Only expose settings that are genuinely supported by the selected provider.
+
+Do not create controls that appear functional but have no effect.
+
+6.3 Translation settings
+
+- Source and target languages.
+- Natural, literal, and clean translation styles.
+- Conversation context retention.
+- Supported profanity or content-filter behavior.
+- Partial versus finalized transcription display.
+- Translation provider configuration, where appropriate.
+
+Preserve the speaker's intended meaning and conversational tone.
+
+Content filtering must not silently change meaning without a clear policy.
+
+6.4 Developer and API configuration
+
+Create a secure configuration system for environment-specific values and provider credentials.
+
+Requirements:
+
+- Provide a documented ".env.example".
+- Validate required environment variables on the backend.
+- Show which providers are configured without revealing secret values.
+- Provide actionable missing-configuration errors.
+- Keep provider credentials on the server.
+- Never expose private API keys in frontend bundles, browser storage, logs, or client responses.
+- Do not commit ".env" files containing real secrets.
+- Support local development and deployment configuration.
+
+If the current deployment platform supports secure environment variables, document how to configure them.
+
+Do not build an insecure API-key storage form in the browser.
+
+If user-managed credentials are genuinely required, design a secure server-side mechanism with appropriate authentication and encryption.
+
+6.5 UI customization
+
+Provide practical customization options such as:
+
+- Dark, light, and system theme.
+- Accent color selection.
+- Compact or comfortable layout.
+- Optional display of diagnostic metrics.
+- Translation text size.
+- Conversation panel layout.
+
+Persist these settings and apply them consistently across the application.
+
+6.6 Save, reset, and persistence
+
+Implement:
+
+- Save Changes.
+- Reset to Defaults.
+- Clear confirmation before destructive actions.
+- Clear indication of unsaved changes.
+- Persistent storage.
+- Validation and error messages.
+
+Global settings must survive reloads, browser restarts, and new conversation threads.
+
+---
+
+7. GLOBAL DEFAULTS AND THREAD-SPECIFIC OVERRIDES
+
+Implement two levels of configuration.
+
+Global defaults
+
+The user's preferred configuration should apply automatically to all new sessions.
+
+Examples:
+
+- Default source and target languages.
+- Default voice identity.
+- Default content style.
+- Default playback speed.
+- Default translation provider.
+- Default voice provider.
+- Relevant audio preferences.
+
+The user must not have to configure their voice identity every time they start a conversation.
+
+Per-thread settings
+
+Every thread must support its own settings panel.
+
+A thread may override:
+
+- Source language.
+- Target language.
+- Translation direction.
+- Voice profile.
+- Voice generation settings supported by the provider.
+- Content style.
+- Playback speed.
+- Context behavior.
+
+Use inheritance from global defaults.
+
+If a thread has no override, use the current global default according to a documented and consistent policy.
+
+Once a thread-specific override is explicitly saved, preserve it when reopening that thread.
+
+Make it easy to:
+
+- View inherited settings.
+- Change settings for the current thread only.
+- Reset thread settings to global defaults.
+- Save a new default globally when explicitly requested.
+
+Do not unexpectedly overwrite thread-specific settings when global defaults change.
+
+Persist voice profile references rather than repeatedly uploading or re-enrolling the same voice sample.
+
+---
+
+8. SESSIONS AND THREADS — PERSISTENT CONVERSATION HISTORY
+
+Build a complete Sessions and Threads system.
+
+This is a core Version 1.0.0 requirement, not a future placeholder.
+
+Use a consistent data model that separates a conversation thread from an individual live session.
+
+A thread represents a continuing conversation.
+
+A session represents a recording or live interaction within that thread.
+
+A thread may contain multiple sessions, including sessions created on different days.
+
+8.1 Sessions page
+
+Create a polished conversation history page.
+
+Each thread should display, where available:
+
+- Conversation title.
+- Participants or speaker labels.
+- Language pair.
+- Last activity.
+- Creation date.
+- Number of sessions.
+- Message or utterance count.
+- Saved transcript status.
+- Voice configuration indicator.
+
+Provide:
+
+- Search.
+- Sort by recent activity.
+- Filters by language pair.
+- New Conversation.
+- Open Conversation.
+- Rename.
+- Delete with confirmation.
+- Continue Conversation.
+
+Support an empty state with a clear New Conversation action.
+
+8.2 Thread detail page
+
+When a user opens a previous thread, show its complete chronological conversation history.
+
+Each utterance should retain, where available:
+
+- Original recognized text.
+- Translated text.
+- Source language.
+- Target language.
+- Speaker identity or label.
+- Timestamp.
+- Session ID.
+- Translation direction.
+- Voice profile used.
+- Audio reference, if retained.
+- Processing status or error information.
+
+Display the original and translated text clearly.
+
+For example:
+
+Speaker A — Persian:
+"سلام، جلسه رو شروع کنیم."
+
+Translation — English:
+"Hi, let's start the meeting."
+
+Speaker B — English:
+"Sure, let's begin."
+
+Translation — Persian:
+"حتماً، شروع کنیم."
+
+Provide playback controls when audio has been retained.
+
+Do not pretend that audio is available when only the transcript was saved.
+
+8.3 Continue an old conversation
+
+A user must be able to reopen a thread from several days or weeks earlier and continue the same conversation.
+
+The workflow must be:
+
+1. Open Sessions.
+2. Select an existing thread.
+3. Read its previous transcript.
+4. Review the thread's settings and voice profile.
+5. Press Start or Resume.
+6. Begin a new live session inside the existing thread.
+7. Continue bidirectional translation.
+8. Save new utterances and audio references.
+9. Update the thread's last activity.
+
+Do not create a duplicate thread when the user intends to continue an existing one.
+
+Each resumed interaction should have a distinct session ID, while remaining part of the original thread.
+
+Restore the thread's settings and relevant conversation context.
+
+Do not assume that browser memory alone is sufficient for persistence.
+
+8.4 New conversation
+
+When the user selects New Conversation:
+
+- Create a new thread.
+- Apply the current global defaults.
+- Allow thread-specific configuration.
+- Initialize a new session when recording begins.
+- Save utterances as they are finalized.
+- Preserve completed utterances if the live connection fails.
+
+8.5 Data model
+
+Adapt the schema to the existing database, but preserve these logical entities:
+
+UserSettings
+
+- User ID, where authentication exists.
+- Global preferences.
+- Default voice profile reference.
+- UI configuration.
+- Audio retention preferences.
+
+VoiceProfile
+
+- Profile ID.
+- Owner or account reference.
+- Provider ID.
+- Display name.
+- Enrollment status.
+- Creation and update timestamps.
+- Optional quality and diagnostic metadata.
+- Deletion status.
+
+ConversationThread
+
+- Thread ID.
+- Title.
+- Creation timestamp.
+- Last activity timestamp.
+- Language defaults or overrides.
+- Voice profile reference.
+- Thread-specific settings.
+
+ConversationSession
+
+- Session ID.
+- Thread ID.
+- Start and end timestamps.
+- Status.
+- Language configuration.
+- Session-specific metadata.
+
+Utterance
+
+- Utterance ID.
+- Thread ID.
+- Session ID.
+- Speaker ID or label.
+- Source language.
+- Original text.
+- Translated text.
+- Voice profile reference.
+- Timestamps.
+- Optional audio reference.
+- Processing status.
+
+Use database migrations or an appropriate schema-update process.
+
+Implement proper relationships, indexing, error handling, and persistence.
+
+Do not use an in-memory array as the production conversation database.
+
+If authentication is not present, determine the safest feasible persistence model for the existing deployment. Clearly document whether data is device-local or server-persisted and avoid exposing one user's conversations to another user.
+
+---
+
+9. BIDIRECTIONAL LIVE TRANSLATION
+
+Implement both directions using a shared, configurable pipeline.
+
+Direction A: Persian to English
+
+Microphone
+→ Streaming ASR
+→ Persian transcript
+→ Context-aware translation
+→ English text
+→ Selected voice generation
+→ Audio playback
+
+Direction B: English to Persian
+
+Incoming microphone or supported audio input
+→ Streaming ASR
+→ English transcript
+→ Context-aware translation
+→ Persian text
+→ Selected target voice generation
+→ Audio playback
+
+Do not implement reverse translation as a cosmetic language-selector change.
+
+Verify that the correct source language, target language, voice profile, and translation pipeline are used.
+
+Speaker handling
+
+For live two-person conversations, support reliable source separation at the application level through appropriate input selection or supported speaker attribution.
+
+If both speakers use one microphone, use diarization only when supported by the selected service and the audio quality makes it feasible.
+
+Do not assume that a single microphone can always identify speakers perfectly.
+
+Where separate microphone or channel input is required, explain this limitation in the UI.
+
+Prevent translated playback from being accidentally recognized again as new source speech whenever possible.
+
+Evaluate headphone playback, echo cancellation, noise suppression, voice activity detection, and playback interruption behavior.
+
+Live behavior
+
+- Support partial transcription when available.
+- Finalize utterances using appropriate endpointing or voice activity detection.
+- Avoid generating duplicate translations.
+- Preserve utterance order.
+- Handle temporary disconnections.
+- Provide retry behavior where safe.
+- Avoid silently losing completed utterances.
+- Keep the UI responsive while processing occurs.
+
+Do not block the main UI while awaiting audio generation.
+
+---
+
+10. AUDIO QUALITY, LATENCY, AND RELIABILITY
+
+Keep microphone capture, speech recognition, translation, voice generation, and audio output modular.
+
+Evaluate the available realtime transport options, including WebRTC and WebSocket streaming, against the existing stack and provider capabilities.
+
+Measure actual performance.
+
+Track:
+
+- Audio capture and buffering.
+- ASR latency.
+- Translation latency.
+- Voice generation latency.
+- Time to first playable audio.
+- End-to-end latency.
+- Failed requests.
+- Rate-limit events.
+- Reconnection attempts.
+
+Report actual measured values rather than invented estimates.
+
+Preserve the original meaning and conversational tone while minimizing unnecessary delays.
+
+Prioritize understandable, natural speech over aggressive optimizations that damage audio quality.
+
+Use chunked playback only if it improves the real implementation and maintains acceptable speech continuity.
+
+Do not assume that a provider supports streaming generation without verifying its current official documentation.
+
+---
+
+11. CONTENT STYLE AND TRANSLATION CONTEXT
+
+Provide at least these styles:
+
+Natural: Conversational translation that preserves meaning, intent, and tone.
+
+Literal: Translation that stays closer to the original wording.
+
+Clean: Translation that follows a clearly defined content-filtering policy without silently changing the speaker's intent.
+
+Natural should be the default.
+
+Maintain relevant thread context so that names, terminology, pronouns, and ongoing topics remain consistent.
+
+Use appropriate technical, professional, and casual language according to context.
+
+Allow the user to control context retention through settings.
+
+Avoid sending the entire conversation repeatedly if a compact context summary or bounded context window can accomplish the same purpose.
+
+---
+
+12. BACKEND, SECURITY, AND STORAGE
+
+Preserve or improve the existing backend.
+
+Requirements:
+
+- Secure provider integrations.
+- Server-side secret management.
+- Request validation.
+- Useful error messages.
+- Rate-limit handling.
+- Appropriate request timeouts.
+- Secure database access.
+- User-scoped authorization when accounts exist.
+- Safe audio storage.
+- Explicit audio retention and deletion behavior.
+- Logging that excludes secrets and unnecessary sensitive audio or transcript data.
+
+Do not store raw voice samples indefinitely by default.
+
+Explain whether voice samples, voice embeddings, generated audio, and transcripts are stored by the selected provider or by Vox Shift.
+
+Where supported, allow users to delete saved voice profiles and retained audio.
+
+Deleting a local reference must not be presented as successful deletion from an external provider unless the provider confirms it.
+
+If the application has no authentication, do not introduce complex authentication unless necessary. However, do not deploy publicly accessible endpoints that expose private data or unrestricted paid API usage.
+
+---
+
+13. MODULAR PROVIDER ARCHITECTURE
+
+Keep the following responsibilities separate:
+
+- AudioCaptureProvider
+- SpeechRecognitionProvider
+- TranslationProvider
+- VoiceIdentityProvider
+- AudioPlaybackProvider
+- RealtimeTransportProvider
+- ConversationRepository
+- SettingsRepository
+
+Use stable interfaces and adapters appropriate to the current programming language.
+
+A provider should be replaceable without rewriting the main UI or conversation model.
+
+Keep provider-specific response formats and error handling inside their respective adapters.
+
+Verify current provider APIs using official documentation before implementing or changing integrations.
+
+Do not fabricate API endpoints, request parameters, SDK methods, or provider capabilities.
+
+Use pinned or compatible dependencies and document any required migrations.
+
+---
+
+14. ERROR HANDLING AND DIAGNOSTICS
+
+Implement actionable errors for:
+
+- Missing API credentials.
+- Invalid provider configuration.
+- Microphone permission denied.
+- Unsupported audio format.
+- Invalid voice sample.
+- Voice enrollment failure.
+- Voice profile not found.
+- Unsupported language pair.
+- Translation provider failure.
+- Audio generation failure.
+- Rate limit exceeded.
+- Network disconnection.
+- Database persistence failure.
+- Session resume failure.
+
+Show errors in the UI and log appropriate technical details on the server.
+
+Never return a fake success response when an operation fails.
+
+When a provider is unavailable, show a truthful status and a safe retry option.
+
+Do not automatically switch to an unrelated demo voice or mock translation without informing the user.
+
+Create a diagnostic section that helps developers verify which providers are configured and which pipeline stages are working, without exposing credentials.
+
+---
+
+15. TESTING REQUIREMENTS
+
+Do not declare Version 1.0.0 complete merely because the application compiles.
+
+Create or update automated tests for the implemented features.
+
+Unit tests
+
+Test:
+
+- Settings validation and persistence.
+- Global defaults.
+- Thread-specific overrides.
+- Translation request construction.
+- Voice profile selection.
+- Voice provider error handling.
+- Session and thread relationships.
+- Utterance ordering.
+- Progress-state transitions.
+
+Integration tests
+
+Test:
+
+- Voice sample upload and enrollment.
+- Custom profile selection.
+- Actual voice-generation requests.
+- Bidirectional translation.
+- Session creation.
+- Saving transcripts.
+- Reopening previous threads.
+- Resuming conversations.
+- Applying thread-specific settings.
+- Restoring settings after reload.
+
+Use mocks only for tests that are explicitly testing application behavior in isolation.
+
+Clearly distinguish mocked tests from tests that use a real provider.
+
+End-to-end acceptance tests
+
+Verify these scenarios:
+
+Scenario A: First-time user
+
+1. Open Vox Shift.
+2. Configure the available providers.
+3. Record a voice sample.
+4. Complete real voice enrollment.
+5. Test generated speech.
+6. Set the profile as the global default.
+7. Start a Persian-to-English conversation.
+8. Confirm the translated English audio uses the selected custom voice.
+9. Stop and save the conversation.
+
+Scenario B: Persistent settings
+
+1. Change global language and voice settings.
+2. Reload the application.
+3. Start a new thread.
+4. Confirm the saved settings are applied.
+
+Scenario C: Thread-specific configuration
+
+1. Open an existing thread.
+2. Select a different supported voice profile.
+3. Save the override.
+4. Close and reopen the thread.
+5. Confirm that the override persists.
+6. Confirm that unrelated global defaults have not been unexpectedly modified.
+
+Scenario D: Resume a conversation
+
+1. Create a thread and record several utterances.
+2. End the session.
+3. Open another thread.
+4. Return to the original thread.
+5. Verify the old transcript and session history.
+6. Start a new session inside that same thread.
+7. Confirm that new utterances are appended to the original thread.
+
+Scenario E: Reverse translation
+
+1. Speak Persian and verify English translation and audio.
+2. Switch to English input and Persian output.
+3. Verify Persian translation and audio.
+4. Verify speaker labels, language direction, and transcript persistence.
+
+Scenario F: Voice failure
+
+1. Simulate an invalid sample, a missing voice profile, and a provider error.
+2. Confirm that the UI shows the correct state.
+3. Confirm that no fake completion is displayed.
+4. Confirm that an unrelated demo voice is not silently substituted.
+
+Scenario G: Rate limits
+
+1. Simulate an HTTP 429 response.
+2. Confirm that the error is handled safely.
+3. Prevent uncontrolled automatic retries.
+4. Provide an appropriate retry action.
+
+Run the available linting, type checking, unit tests, integration tests, production build, and any practical end-to-end tests.
+
+Do not claim that a test passed unless it was actually executed and passed.
+
+If a real provider test cannot run because credentials or external services are unavailable, identify the blocker and report the test as unverified.
+
+---
+
+16. VERSIONING AND DEMO RELEASE
+
+Prepare a release candidate for:
+
+Vox Shift v1.0.0 Demo
+
+Update version metadata where appropriate and document the release.
+
+Provide:
+
+- Updated README.
+- Installation instructions.
+- Local development instructions.
+- Environment variable documentation.
+- ".env.example".
+- Database migration instructions.
+- Provider configuration instructions.
+- Voice enrollment instructions.
+- Known limitations.
+- Test results.
+- Build and deployment instructions.
+- Version and changelog information.
+
+If a deployment configuration exists, update it as required.
+
+Do not claim the application is deployed unless an actual deployment has succeeded.
+
+Do not call the demo production-ready if essential security, privacy, or reliability requirements remain unverified.
+
+The application must clearly distinguish a functioning feature from a planned feature.
+
+Video dubbing remains outside the release-blocking scope unless the existing project already implements it reliably.
+
+---
+
+17. IMPLEMENTATION WORKFLOW
+
+Follow this order.
+
+Stage 1 — Audit
+
+Inspect the repository, reproduce the current issues, and identify broken or mocked features.
+
+Stage 2 — Repair the voice pipeline
+
+Fix custom voice enrollment, persistent profile references, actual profile selection, and generated audio.
+
+Stage 3 — Implement persistent data
+
+Create or update settings, voice profiles, threads, sessions, and utterances.
+
+Stage 4 — Redesign the UI
+
+Implement the complete responsive navigation, translation workspace, settings center, voice identity page, and sessions interface.
+
+Stage 5 — Integrate bidirectional translation
+
+Verify both Persian-to-English and English-to-Persian flows, including voice generation and playback.
+
+Stage 6 — Integrate persistence
+
+Verify global settings, thread-specific overrides, saved history, and session resumption.
+
+Stage 7 — Test and harden
+
+Run automated tests, investigate failures, fix defects, and measure actual latency and voice behavior.
+
+Stage 8 — Release preparation
+
+Update documentation, configuration examples, version metadata, and the changelog.
+
+Do not stop after completing Stage 1 or producing a plan. Continue through the stages and deliver the strongest working implementation possible.
+
+If the repository has architectural limitations, refactor the affected components instead of hiding the limitation behind a mock UI.
+
+---
+
+18. DEFINITION OF DONE
+
+Vox Shift Version 1.0.0 is ready for demo release only when the following are verified:
+
+- [ ] The existing UI has been meaningfully redesigned.
+- [ ] The settings gear opens a real settings page.
+- [ ] Settings persist after reload.
+- [ ] Global defaults apply to new threads.
+- [ ] Thread-specific settings can override global defaults.
+- [ ] Voice enrollment creates or references a real provider profile.
+- [ ] Selecting a custom profile affects the actual audio-generation request.
+- [ ] The generated audio is not silently replaced by the demo voice.
+- [ ] Voice enrollment shows truthful progress and processing status.
+- [ ] Persian-to-English translation and audio work.
+- [ ] English-to-Persian translation and audio work.
+- [ ] Sessions and threads are persisted.
+- [ ] Previous conversation transcripts can be reopened.
+- [ ] Existing threads can be continued with new sessions.
+- [ ] Audio availability and retention are accurately represented.
+- [ ] API secrets remain server-side.
+- [ ] Errors and rate limits are handled.
+- [ ] Relevant automated tests have been executed.
+- [ ] The production build succeeds.
+- [ ] Documentation and release notes are updated.
+- [ ] Remaining blockers and unverified capabilities are documented.
+
+A checkbox must only be marked complete when there is evidence that the corresponding behavior works.
+
+---
+
+19. FINAL DELIVERY REPORT
+
+When implementation is complete, provide a concise engineering report containing:
+
+1. Summary of the changes actually implemented.
+2. Major UI screens redesigned.
+3. Voice identity provider and its verified capabilities.
+4. Root cause of the original custom voice failure and how it was fixed.
+5. Database and persistence changes.
+6. Global and per-thread settings behavior.
+7. Session creation and resumption behavior.
+8. Translation directions tested.
+9. Files and components changed.
+10. Environment variables and setup instructions.
+11. Commands used to run the application.
+12. Tests executed and their actual results.
+13. Build status.
+14. Measured latency, where available.
+15. Remaining limitations and external dependencies.
+16. Steps needed to run and verify the demo.
+
+If a requested feature cannot be implemented because the chosen provider does not support it, state the exact limitation and provide the most practical technically valid alternative.
+
+Final instruction: Modify the existing Vox Shift repository. Implement the real functionality. Redesign the real UI. Verify the behavior. Prepare the v1.0.0 demo release. Do not deliver only a plan, a mockup, or placeholder controls.
