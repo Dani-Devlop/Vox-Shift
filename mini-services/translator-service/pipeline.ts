@@ -9,9 +9,11 @@ import type {
   UtteranceResult,
 } from './types'
 import { ZaiASREngine } from './engines/asr'
-import { LLMTranslationEngine, parseAutoPair, buildSystemPrompt, buildUserPrompt, buildAutoSystemPrompt, parseAutoReply, type TranslationContextTurn } from './engines/translator'
+import { localASR } from './engines/local-asr'
+import { LLMTranslationEngine, parseAutoPair, buildSystemPrompt, buildUserPrompt, buildAutoSystemPrompt, parseAutoReply, type TranslationContextTurn, type SpeakerContext } from './engines/translator'
 import { VoiceIdentityEngine } from './engines/voice'
 import { openAICompatibleASR, openAICompatibleChat, routedCall } from './providers/router'
+import { detectLocalRuntimes } from './providers/local-runtimes'
 import { pcmToWav } from './engines/audio-utils'
 import { computeVoiceprint } from '../../src/lib/speaker/voiceprint'
 import type { SpeakerTracker } from './engines/speaker-tracker'
@@ -47,10 +49,23 @@ export function clearSession(sessionId: string) {
   sessionHistory.delete(sessionId)
 }
 
+export interface PipelineEvent {
+  type:
+    | 'speaker.info'
+    | 'translation.completed'
+    | 'transcript.final'
+    | 'tts.started'
+    | 'tts.completed'
+  utteranceId?: string
+  [key: string]: unknown
+}
+
 export interface PipelineHandlers {
   onStage: (event: StageEvent) => void
   /** Fires right after the translation stage — before voice synthesis. */
   onTranslation?: (event: TranslationEvent) => void
+  /** Real-time semantic events (v3 §27) — mapped to socket events by server.ts. */
+  onEvent?: (event: PipelineEvent) => void
   onResult: (result: UtteranceResult) => void
   onError: (error: UtteranceError) => void
 }
@@ -102,6 +117,44 @@ function attributeSpeaker(
   }
 }
 
+/** SpeakerInfo → LLM speaker context (§16 — structured data, never audio). */
+function toSpeakerContext(speaker: UtteranceResult['speaker']): SpeakerContext | undefined {
+  if (!speaker) return undefined
+  return {
+    speakerId: speaker.clusterKey,
+    contactId: speaker.contactId,
+    speakerName: speaker.name,
+    confidence: speaker.confidence,
+    identificationStatus: speaker.status,
+  }
+}
+
+/** Pick the Ollama model used for LOCAL translation/reasoning (deterministic). */
+function pickOllamaModel(models: string[]): string | null {
+  if (models.length === 0) return null
+  const env = process.env.VOXSHIFT_OLLAMA_MODEL
+  if (env && models.includes(env)) return env
+  // Prefer instruct-tuned qwen/llama/mistral/gemma — best fa↔en quality.
+  return models.find((m) => /qwen/i.test(m)) ?? models.find((m) => /(llama|mistral|gemma)/i.test(m)) ?? models[0]
+}
+
+/** LOCAL translation path — a real on-machine LLM (Ollama) when present. */
+async function localTranslate(system: string, user: string, temperature: number): Promise<string> {
+  const rt = await detectLocalRuntimes()
+  const model = pickOllamaModel(rt.ollamaModels)
+  if (!rt.ollamaBaseUrl || !model) {
+    throw new Error(
+      'LOCAL translation not configured on this machine — install Ollama and pull a model (ollama serve + ollama pull qwen2.5:3b-instruct), or use a Server/Cloud provider'
+    )
+  }
+  return openAICompatibleChat(
+    { baseUrl: `${rt.ollamaBaseUrl.replace(/\/$/, '')}/v1`, apiKey: null, model },
+    system,
+    user,
+    temperature
+  )
+}
+
 /** Shared translate → TTS tail used by both the audio and text pipelines. */
 async function translateAndSpeak(
   req: {
@@ -150,11 +203,12 @@ async function translateAndSpeak(
   let effectiveTarget = req.targetLang
   let translateProvider = 'builtin:zai-llm'
 
-  /** Routed explicit-direction translation (user providers → built-in GLM). */
+  /** Routed explicit-direction translation (LOCAL → user providers → built-in GLM). */
   const routedTranslate = async (history?: TranslationContextTurn[]): Promise<string> => {
     const system = buildSystemPrompt(req.sourceLang, req.targetLang, req.style)
-    const user = buildUserPrompt(sourceText, history)
+    const user = buildUserPrompt(sourceText, history, toSpeakerContext(req.speaker))
     const res = await routedCall<string>('translate', {
+      local: () => localTranslate(system, user, 0.3),
       user: (p) => openAICompatibleChat(p, system, user, 0.3),
       builtin: () => translateEngine.translate(sourceText, {
         sourceLang: req.sourceLang,
@@ -170,8 +224,9 @@ async function translateAndSpeak(
   /** Routed AUTO translation (detect + translate in one provider call). */
   const routedTranslateAuto = async (history?: TranslationContextTurn[]): Promise<{ text: string; detectedLang: string }> => {
     const system = buildAutoSystemPrompt(pairAuto ? pairA : req.targetLang, req.style, pairAuto ? [pairA, pairB] : undefined)
-    const user = buildUserPrompt(sourceText, history)
+    const user = buildUserPrompt(sourceText, history, toSpeakerContext(req.speaker))
     const res = await routedCall<string>('translate', {
+      local: () => localTranslate(system, user, 0.2),
       user: (p) => openAICompatibleChat(p, system, user, 0.2),
       builtin: () =>
         translateEngine.translateAuto(sourceText, {
@@ -220,6 +275,8 @@ async function translateAndSpeak(
   }
   const translateMs = Date.now() - t0
   handlers.onStage({ utteranceId, stage: 'translate', status: 'done', ms: translateMs })
+  // §27 — real backend events the frontend reacts to.
+  handlers.onEvent?.({ type: 'translation.completed', utteranceId, sourceLang: effectiveSource, targetLang: effectiveTarget })
 
   const usedProviders = { asr: asrProvider, translate: translateProvider, tts: 'pending' }
 
@@ -248,10 +305,18 @@ async function translateAndSpeak(
     speakerRole: req.speakerRole,
     speaker: req.speaker,
   })
+  handlers.onEvent?.({
+    type: 'transcript.final',
+    utteranceId,
+    sourceText,
+    translatedText,
+    speaker: req.speaker,
+  })
 
   // ── Stage 3: Voice identity synthesis (clone → provider chain → built-in) ─
   const t1 = Date.now()
   handlers.onStage({ utteranceId, stage: 'tts', status: 'start' })
+  handlers.onEvent?.({ type: 'tts.started', utteranceId })
   let audioBase64 = ''
   let audioFormat: 'wav' | 'mp3' = 'wav'
   let ttsProvider = 'builtin:zai-tts'
@@ -266,6 +331,7 @@ async function translateAndSpeak(
       stability: req.stability,
       providerSimilarity: req.providerSimilarity,
       providerStyle: req.providerStyle,
+      lang: effectiveTarget,
     })
     audioBase64 = synth.buffer.toString('base64')
     audioFormat = synth.format
@@ -290,6 +356,7 @@ async function translateAndSpeak(
   }
   const ttsMs = Date.now() - t1
   handlers.onStage({ utteranceId, stage: 'tts', status: 'done', ms: ttsMs })
+  handlers.onEvent?.({ type: 'tts.completed', utteranceId, ms: ttsMs, providerId: ttsProvider })
 
   handlers.onResult({
     ...baseResult({ ...req, sourceLang: effectiveSource, targetLang: effectiveTarget }),
@@ -315,8 +382,9 @@ export async function processUtterance(
     // ── Stage 0: Speaker recognition (LOCAL voiceprint — spec v2 §3/§16) ───
     // Identity is computed BEFORE ASR so it attaches to everything below.
     const { speaker, speakerMs } = attributeSpeaker(req.audioBase64, req.sampleRate, tracker)
+    if (speaker) handlers.onEvent?.({ type: 'speaker.info', utteranceId, speaker })
 
-    // ── Stage 1: Speech recognition (user providers → built-in z-ai ASR) ───
+    // ── Stage 1: Speech recognition (LOCAL → user providers → built-in z-ai) ──
     handlers.onStage({ utteranceId, stage: 'asr', status: 'start' })
     const pcm = Buffer.from(req.audioBase64, 'base64')
     const wav = pcmToWav(pcm, req.sampleRate || 16000)
@@ -324,6 +392,8 @@ export async function processUtterance(
     let sourceText = ''
     let asrProvider = 'builtin:zai-asr'
     const routed = await routedCall<string>('asr', {
+      local: () =>
+        localASR(wavBase64, req.sourceLang === 'auto' ? req.autoPair?.split(',')[0] : req.sourceLang).then((r) => r.text),
       user: (p) => openAICompatibleASR(p, wavBase64),
       builtin: () => asrEngine.transcribe(wavBase64),
     })
@@ -377,12 +447,18 @@ export async function processTextTranslate(req: TextTranslateRequest, handlers: 
 
 /**
  * Live-caption pass: transcribe a mid-speech snapshot only. Runs OUTSIDE the
- * utterance FIFO — best-effort, errors resolve to an empty transcript.
+ * utterance FIFO — best-effort, errors resolve to an empty transcript. The
+ * 20 s cap keeps a hung provider from blocking future partials forever.
  */
 export async function processAsrPartial(req: AsrPartialRequest): Promise<AsrPartialResult> {
   try {
     const wav = pcmToWav(Buffer.from(req.audioBase64, 'base64'), req.sampleRate || 16000)
-    const text = await asrEngine.transcribe(wav.toString('base64'))
+    const text = await Promise.race([
+      asrEngine.transcribe(wav.toString('base64')),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('partial ASR budget exceeded')), 20_000)
+      ),
+    ])
     return { utteranceId: req.utteranceId, text: (text ?? '').trim(), final: false }
   } catch {
     return { utteranceId: req.utteranceId, text: '', final: false }

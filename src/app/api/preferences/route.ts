@@ -36,6 +36,14 @@ function sanitize(input: Record<string, unknown>): Record<string, unknown> {
   if (typeof input.historyRetentionDays === 'number' && [0, 7, 30, 90].includes(input.historyRetentionDays)) {
     out.historyRetentionDays = input.historyRetentionDays
   }
+  // v3: speaker detection mode + provider routing policy
+  if (input.detectionMode === 'auto' || input.detectionMode === 'manual') out.detectionMode = input.detectionMode
+  if (
+    typeof input.routingPolicy === 'string' &&
+    ['auto', 'local_first', 'server_first', 'quality_first', 'low_cost', 'privacy_first', 'manual', 'failover'].includes(input.routingPolicy)
+  ) {
+    out.routingPolicy = input.routingPolicy
+  }
   return out
 }
 

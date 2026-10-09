@@ -17,6 +17,7 @@ import type {
   OtherLang,
   PipelineStage,
   ProviderHealthData,
+  RealtimeEvent,
   SpeakerInfo,
   StyleMode,
   StageEvent,
@@ -147,11 +148,19 @@ interface PersistedSettings {
   betaLangs?: boolean
   /** Auto-delete unstarred history older than N days (0 = keep forever). */
   historyRetentionDays?: number
+  /** Speaker detection mode (v3 §9): 'auto' = real voiceprint attribution
+   *  (default), 'manual' = Speaker A/B fallback for testing. */
+  detectionMode?: 'auto' | 'manual'
+  /** Provider routing policy (v3 §25): auto | local_first | server_first |
+   *  quality_first | low_cost | privacy_first | manual | failover. */
+  routingPolicy?: string
 }
 
 const SETTINGS_KEY = 'lt-settings'
 const STYLES: readonly StyleMode[] = ['clean', 'natural', 'literal', 'formal', 'casual']
 const PREFS_SAVE_DEBOUNCE_MS = 800
+/** Provider routing policies (v3 §25) — mirrors mini-services router. */
+const ROUTING_POLICY_VALUES = ['auto', 'local_first', 'server_first', 'quality_first', 'low_cost', 'privacy_first', 'manual', 'failover'] as const
 
 export interface LatencyStats {
   count: number
@@ -204,9 +213,17 @@ export function useTranslator() {
   const [betaLangs, setBetaLangsState] = useState(true)
   const [historyRetentionDays, setHistoryRetentionDaysState] = useState(0)
   /** Manual speaker turn for two-person conversations ('A' = primary). NOT
-   *  persisted — a per-session state. The engine has NO diarization; this is
-   *  an explicit user action and the UI says so. */
+   *  persisted — a per-session state. ONLY used in MANUAL detection mode;
+   *  AUTO mode (default) uses the server-side voiceprint pipeline instead. */
   const [speaker, setSpeakerState] = useState<SpeakerRole>('A')
+  // ── v3: AUTO speaker detection + provider routing policy (§1/§9/§25) ────
+  const [detectionMode, setDetectionModeState] = useState<'auto' | 'manual'>('auto')
+  const [routingPolicy, setRoutingPolicyState] = useState<string>('failover')
+  /** Ring buffer of real backend events (§27) for the UI event feed. */
+  const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([])
+  const pushRealtimeEvent = useCallback((type: string, detail?: string) => {
+    setRealtimeEvents((prev) => [{ id: `e_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`, type, at: Date.now(), detail }, ...prev].slice(0, 12))
+  }, [])
   const langPair = useMemo<LangPair>(
     () =>
       // AUTO direction: detect the spoken language per utterance; the server
@@ -305,6 +322,8 @@ export function useTranslator() {
   const autoDetectRef = useRef(autoDetect)
   const betaLangsRef = useRef(betaLangs)
   const speakerRef = useRef(speaker)
+  const detectionModeRef = useRef(detectionMode)
+  const routingPolicyRef = useRef(routingPolicy)
   /** True once the initial localStorage+server preference load finished —
    *  prevents a defaults-save from clobbering stored preferences on boot. */
   const prefsHydratedRef = useRef(false)
@@ -408,6 +427,14 @@ export function useTranslator() {
     if (typeof s.showCaptions === 'boolean') setShowCaptionsState(s.showCaptions)
     if (typeof s.autoDetect === 'boolean') setAutoDetectState(s.autoDetect)
     if (typeof s.betaLangs === 'boolean') setBetaLangsState(s.betaLangs)
+    if (s.detectionMode === 'auto' || s.detectionMode === 'manual') {
+      detectionModeRef.current = s.detectionMode
+      setDetectionModeState(s.detectionMode)
+    }
+    if (typeof s.routingPolicy === 'string' && ROUTING_POLICY_VALUES.includes(s.routingPolicy)) {
+      routingPolicyRef.current = s.routingPolicy
+      setRoutingPolicyState(s.routingPolicy)
+    }
     if ([0, 7, 30, 90].includes(Number(s.historyRetentionDays))) {
       setHistoryRetentionDaysState(Number(s.historyRetentionDays))
     }
@@ -460,14 +487,14 @@ export function useTranslator() {
     const t = setTimeout(() => {
       if (activeThreadIdRef.current) return // inside a thread — do not persist
       try {
-        const s: PersistedSettings = { mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays }
+        const s: PersistedSettings = { mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays, detectionMode, routingPolicy }
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
       } catch {
         // Storage unavailable — persistence is a convenience only.
       }
     }, 0)
     return () => clearTimeout(t)
-  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays])
+  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays, detectionMode, routingPolicy])
 
   useEffect(() => {
     if (!prefsHydratedRef.current) return
@@ -478,7 +505,7 @@ export function useTranslator() {
       void fetch('/api/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays }),
+        body: JSON.stringify({ mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays, detectionMode, routingPolicy }),
       }).catch(() => {})
     }, PREFS_SAVE_DEBOUNCE_MS)
     return () => {
@@ -487,7 +514,7 @@ export function useTranslator() {
         prefsSaveTimerRef.current = null
       }
     }
-  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays])
+  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays, detectionMode, routingPolicy])
 
   // ── UI customization setters (spec §4.4) ────────────────────────────────
   const setTextSize = useCallback((size: UIPrefs['textSize']) => setUiPrefs((prev) => ({ ...prev, textSize: size })), [])
@@ -1018,9 +1045,22 @@ export function useTranslator() {
 
   // ── Provider health (§30) ────────────────────────────────────────────────
   const requestProviderHealth = useCallback(() => {
-    const socket = getTranslatorSocket()
-    if (!socket.connected) return
-    socket.emit('providers:health')
+    const s = getTranslatorSocket()
+    if (s.connected) s.emit('providers:health')
+  }, [])
+
+  /** Apply a routing policy immediately — real socket round-trip (v3 §25). */
+  const setRoutingPolicy = useCallback((policy: string) => {
+    routingPolicyRef.current = policy
+    setRoutingPolicyState(policy)
+    const s = getTranslatorSocket()
+    if (s.connected) s.emit('providers:policy', { policy })
+  }, [])
+
+  /** AUTO (voiceprint) vs MANUAL (A/B fallback) speaker detection (v3 §9). */
+  const setDetectionMode = useCallback((m: 'auto' | 'manual') => {
+    detectionModeRef.current = m
+    setDetectionModeState(m)
   }, [])
 
   const reloadProviders = useCallback(() => {
@@ -1047,6 +1087,8 @@ export function useTranslator() {
             disabled: c.disabled,
           })),
       })
+      // Apply the persisted routing policy to the engine (v3 §25).
+      socket.emit('providers:policy', { policy: routingPolicyRef.current })
     }
     const onDisconnect = () => {
       setConnected(false)
@@ -1347,9 +1389,50 @@ export function useTranslator() {
     socket.on('speakers:sample:error', onSpeakersSampleError)
     socket.on('speakers:labeled', onSpeakersLabeled)
     socket.on('providers:health', onProvidersHealth)
+    // §25 truth sync: the engine acknowledges the effective policy — if the
+    // server rejected/adjusted it, the UI follows the SERVER's answer.
+    const onPolicyOk = (data: { policy?: string; accepted?: boolean }) => {
+      if (typeof data?.policy === 'string' && data.policy !== routingPolicyRef.current) {
+        routingPolicyRef.current = data.policy
+        setRoutingPolicyState(data.policy)
+      }
+    }
+    socket.on('providers:policy-ok', onPolicyOk)
+
+    // ── v3: real-time event model (§27) — the UI reacts to REAL backend events,
+    // never to timers or mock data.
+    const onNamed = (type: string) => (data: Record<string, unknown>) => {
+      const detail =
+        typeof data?.name === 'string'
+          ? [data.name, typeof data?.confidence === 'number' ? `${Math.round(data.confidence * 100)}%` : ''].filter(Boolean).join(' · ')
+          : typeof (data?.to as Record<string, unknown> | undefined)?.name === 'string'
+            ? String((data.to as Record<string, unknown>).name)
+            : undefined
+      pushRealtimeEvent(type, detail)
+      if (type === 'speaker.enrolled' && typeof data?.contactId === 'string') {
+        // New persistent identity → refresh contacts + resync to the engine.
+        void loadContacts(true)
+      }
+    }
+    for (const t of ['speaker.started', 'speaker.changed', 'speaker.recognized', 'speaker.unknown', 'speaker.enrollment_started', 'speaker.enrollment_ready', 'speaker.enrolled', 'translation.completed', 'tts.started', 'tts.completed']) {
+      socket.on(t, onNamed(t))
+    }
+    const onTranscriptFinal = (data: Record<string, unknown>) => {
+      pushRealtimeEvent('transcript.final', typeof data?.translatedText === 'string' ? data.translatedText.slice(0, 60) : undefined)
+    }
+    socket.on('transcript.final', onTranscriptFinal)
+    const onProviderFailed = (data: { providerId?: string; error?: string }) => {
+      pushRealtimeEvent('provider.failed', `${data?.providerId ?? 'provider'}: ${(data?.error ?? 'failed').slice(0, 100)}`)
+    }
+    const onProviderFallback = (data: { fromProviderId?: string; toProviderId?: string }) => {
+      pushRealtimeEvent('provider.fallback', `${data?.fromProviderId ?? '?'} → ${data?.toProviderId ?? '?'}`)
+    }
+    socket.on('provider.failed', onProviderFailed)
+    socket.on('provider.fallback', onProviderFallback)
 
     if (socket.connected) {
       setConnected(true)
+      socket.emit('providers:policy', { policy: routingPolicyRef.current })
       socket.emit('session:init', {
         contacts: contactsRef.current
           .filter((c) => Array.isArray(c.vector) && c.vector.length > 0)
@@ -1376,8 +1459,15 @@ export function useTranslator() {
       socket.off('speakers:sample:error', onSpeakersSampleError)
       socket.off('speakers:labeled', onSpeakersLabeled)
       socket.off('providers:health', onProvidersHealth)
+      socket.off('providers:policy-ok', onPolicyOk)
+      for (const t of ['speaker.started', 'speaker.changed', 'speaker.recognized', 'speaker.unknown', 'speaker.enrollment_started', 'speaker.enrollment_ready', 'speaker.enrolled', 'translation.completed', 'tts.started', 'tts.completed']) {
+        socket.off(t, onNamed(t))
+      }
+      socket.off('transcript.final', onTranscriptFinal)
+      socket.off('provider.failed', onProviderFailed)
+      socket.off('provider.fallback', onProviderFallback)
     }
-  }, [toast, ensureHistorySessionId])
+  }, [toast, ensureHistorySessionId, pushRealtimeEvent, loadContacts])
 
   // ── Playback state → status ─────────────────────────────────────────────
   const handlePlaybackStart = useCallback(() => {
@@ -1503,7 +1593,7 @@ export function useTranslator() {
           // Speaker B (second person in a two-way conversation) speaks the
           // opposite language and audibly DIFFERENT: pipeline default voice,
           // no profile — so the two sides of the dialogue are distinguishable.
-          const isB = speakerRef.current === 'B'
+          const isB = detectionModeRef.current === 'manual' && speakerRef.current === 'B'
           const bProf = isB ? null : prof
           const useProfile = Boolean(bProf)
           const pair = langPairRef.current
@@ -1527,7 +1617,9 @@ export function useTranslator() {
             stability: useProfile ? bProf!.stability : undefined,
             providerSimilarity: useProfile ? bProf!.providerSimilarity ?? undefined : undefined,
             providerStyle: useProfile ? bProf!.providerStyle ?? undefined : undefined,
-            speakerRole: speakerRef.current,
+            speakerRole: detectionModeRef.current === 'manual' ? speakerRef.current : undefined,
+            detectionMode: detectionModeRef.current,
+            ttsEcho: false, // MicRecorder freezes VAD during playback (echo-guard)
           }
           // Context off (settings): each phrase translates standalone — clear the
           // pipeline's rolling conversation history before this utterance runs.
@@ -2283,6 +2375,12 @@ export function useTranslator() {
     requestProviderHealth,
     reloadProviders,
     lastProviders,
+    // ── v3: AUTO speaker detection + routing policy + realtime events ──────
+    detectionMode,
+    setDetectionMode,
+    routingPolicy,
+    setRoutingPolicy,
+    realtimeEvents,
   }
 }
 

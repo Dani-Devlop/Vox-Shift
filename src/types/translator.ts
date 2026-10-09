@@ -188,12 +188,16 @@ export interface VoiceContactData {
 /** A user-registered API provider (keys are NEVER sent to the client). */
 export interface UserProviderData {
   id: string
-  category: 'asr' | 'translate' | 'tts'
+  category: 'asr' | 'translate' | 'llm' | 'tts'
   kind: string
+  /** Provider class (v3 §15): server | cloud | custom. */
+  class?: string
   name: string
   baseUrl: string
   model: string | null
   voiceId: string | null
+  /** Number of extra headers configured — values never leave the server. */
+  headerCount?: number
   hasKey: boolean
   keyHint: string | null
   priority: number
@@ -202,17 +206,30 @@ export interface UserProviderData {
   updatedAt: string
 }
 
+/** Real-time backend event (v3 §27) — surfaced in the live event feed. */
+export interface RealtimeEvent {
+  id: string
+  type: string
+  at: number
+  detail?: string
+}
+
 export interface ProviderHealthData {
   providerId: string
   name: string
   category: string
   kind: string
+  /** Provider class (v3 §15): local | server | cloud | custom. */
+  class?: string
   enabled: boolean
   state: string
   lastError?: string
   lastCheckedAt?: string
   consecutiveFailures: number
   cooldownUntil?: string
+  /** Real latency of the last successful call (ms). */
+  lastMs?: number
+  model?: string | null
 }
 
 export interface StageEvent {

@@ -32,7 +32,7 @@ import type { StyleMode } from '@/types/translator'
 import { LANG_META } from '@/types/translator'
 import { cn } from '@/lib/utils'
 
-const APP_VERSION = 'v2.2.0'
+const APP_VERSION = 'v3.0.0'
 
 export default function LiveTranslatorPage() {
   const t = useTranslator()
@@ -59,6 +59,8 @@ export default function LiveTranslatorPage() {
     contacts, contactsLoading, loadContacts, createContact, updateContact, deleteContact, reenrollContact,
     speakers, identify, startIdentify, cancelIdentify, confirmIdentify, confirmCandidate, keepUnknown, correctSpeaker,
     providerHealth, requestProviderHealth, reloadProviders, lastProviders,
+    // v3: AUTO speaker detection + routing policy + realtime event feed
+    detectionMode, setDetectionMode, routingPolicy, setRoutingPolicy, realtimeEvents,
   } = t
 
   const latest = useMemo(() => transcript[0] ?? null, [transcript])
@@ -439,8 +441,16 @@ export default function LiveTranslatorPage() {
                   speaker={speaker}
                   onSpeakerChange={setSpeaker}
                   speakerNote={
-                    'Speaker recognition is automatic (local voiceprints): known contacts are named, unknown voices get stable “Unknown N” labels — never a guess. The A/B switch below forces the translation direction for each side.'
+                    'Manual attribution fallback for testing — identity is whatever you label it, not recognized.'
                   }
+                  detectionMode={detectionMode}
+                  onDetectionModeChange={setDetectionMode}
+                  activeSpeaker={activeSpeaker}
+                  sessionSpeakers={Object.values(speakers)}
+                  contacts={contacts.map((c) => ({ id: c.id, name: c.name, disabled: c.disabled }))}
+                  onStartIdentify={startIdentify}
+                  onConfirmCandidate={confirmCandidate}
+                  onKeepUnknown={keepUnknown}
                 />
               </div>
 
@@ -607,6 +617,9 @@ export default function LiveTranslatorPage() {
           providerHealth={providerHealth}
           onRequestProviderHealth={requestProviderHealth}
           onReloadProviders={reloadProviders}
+          routingPolicy={routingPolicy}
+          onRoutingPolicyChange={setRoutingPolicy}
+          realtimeEvents={realtimeEvents}
         />
       )}
 

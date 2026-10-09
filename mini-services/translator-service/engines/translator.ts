@@ -111,8 +111,29 @@ function buildSystemPrompt(sourceLang: string, targetLang: string, style: StyleM
     .join('\n')
 }
 
-function buildUserPrompt(text: string, history?: TranslationContextTurn[]): string {
-  if (!history || history.length === 0) return text
+function buildUserPrompt(
+  text: string,
+  history?: TranslationContextTurn[],
+  speaker?: SpeakerContext
+): string {
+  // Structured speaker metadata (v3 §16) — the LLM is the REASONING layer and
+  // receives diarization results as data; it never performs identification.
+  const speakerBlock = speaker
+    ? [
+        '',
+        '[SPEAKER CONTEXT]',
+        JSON.stringify({
+          speaker_id: speaker.speakerId,
+          contact_id: speaker.contactId ?? null,
+          speaker_name: speaker.speakerName ?? null,
+          confidence: speaker.confidence ?? null,
+          identification_status: speaker.identificationStatus,
+        }),
+        '(Speaker metadata comes from the diarization layer — informational only. Translate ONLY the utterance text; keep names and address forms natural.)',
+        '',
+      ].join('\n')
+    : ''
+  if (!history || history.length === 0) return `${speakerBlock}${text}`
   // Rolling conversational context keeps pronouns/tense coherent across utterances.
   const contextLines = history
     .slice(-6)
@@ -121,9 +142,18 @@ function buildUserPrompt(text: string, history?: TranslationContextTurn[]): stri
   return [
     'Recent conversation (for context only, do not translate these):',
     contextLines,
-    '',
+    speakerBlock,
     `Now translate this utterance: ${text}`,
   ].join('\n')
+}
+
+/** Diarization-derived context handed to the LLM (§16 — data, never audio). */
+export interface SpeakerContext {
+  speakerId: string
+  contactId?: string
+  speakerName?: string
+  confidence?: number
+  identificationStatus: 'verified' | 'possible' | 'unknown' | 'context'
 }
 
 // ── Auto language detection ───────────────────────────────────────────────────

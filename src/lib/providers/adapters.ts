@@ -9,11 +9,16 @@ export interface AdapterProvider {
   apiKey: string | null
   model?: string | null
   voiceId?: string | null
+  /** Extra HTTP headers (v3 §24) — merged into every call; never logged. */
+  headers?: Record<string, string>
 }
 
-function requireKey(p: AdapterProvider): string {
-  if (!p.apiKey) throw new Error('API key missing for this provider')
-  return p.apiKey
+function authHeaders(p: AdapterProvider): Record<string, string> {
+  const out: Record<string, string> = {}
+  // Keyless local servers (Ollama/vLLM) are allowed — no Authorization header.
+  if (p.apiKey) out.Authorization = `Bearer ${p.apiKey}`
+  for (const [k, v] of Object.entries(p.headers ?? {})) out[k] = v
+  return out
 }
 
 const CALL_TIMEOUT_MS = 30_000
@@ -36,7 +41,7 @@ export async function openAICompatibleASR(p: AdapterProvider, wavBase64: string)
   form.append('model', p.model ?? 'whisper-1')
   const res = await fetchWithTimeout(`${p.baseUrl.replace(/\/$/, '')}/audio/transcriptions`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${requireKey(p)}` },
+    headers: authHeaders(p),
     body: form,
   })
   if (!res.ok) {
@@ -56,7 +61,7 @@ export async function openAICompatibleChat(
 ): Promise<string> {
   const res = await fetchWithTimeout(`${p.baseUrl.replace(/\/$/, '')}/chat/completions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${p.apiKey}` },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(p) },
     body: JSON.stringify({
       model: p.model ?? 'gpt-4o-mini',
       messages: [
@@ -82,7 +87,7 @@ export async function openAICompatibleTTS(
 ): Promise<{ bytes: Buffer; format: 'wav' | 'mp3' }> {
   const res = await fetchWithTimeout(`${p.baseUrl.replace(/\/$/, '')}/audio/speech`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${p.apiKey}` },
+    headers: { 'Content-Type': 'application/json', ...authHeaders(p) },
     body: JSON.stringify({
       model: p.model ?? 'tts-1',
       input: text,

@@ -1,0 +1,142 @@
+{
+  "manifest_version": "3.1.0",
+  "generated": "2026-10-09",
+  "target": {
+    "host": "5fcee54181ef (container)",
+    "cpu": "AMD EPYC 9655P 96-Core (Zen 5), 48 vCPU assigned",
+    "isa": ["AVX2", "AVX512F/DQ/VL/BW/VBMI/VNNI", "AVX_VNNI", "AVX512_BF16", "VAES", "SHA_NI"],
+    "ram_available_gb": 89,
+    "disk_free_tb": 1.8,
+    "gpu": null,
+    "co_tenancy": "shared host, load ~20/48 — benchmarks must record load"
+  },
+  "components": [
+    {
+      "component": "vad",
+      "selected": {
+        "model": "Silero VAD (repo-default v6.x)",
+        "repo": "snakers4/silero-vad",
+        "file": "src/silero_vad/data/silero_vad.onnx",
+        "size_bytes": 2327524,
+        "engine": "onnxruntime",
+        "quantization": "fp32",
+        "license": "MIT",
+        "status": "TO_INSTALL"
+      },
+      "fallback": { "model": "WebRTC VAD", "package": "webrtcvad==2.0.10", "license": "MIT/BSD-3" },
+      "rejected": [{ "model": "TEN-VAD", "reason": "Apache-2.0 + Agora anti-competition rider" }]
+    },
+    {
+      "component": "speaker_embedding",
+      "selected": {
+        "model": "3D-Speaker CAM++ (VoxCeleb EN)",
+        "asset": "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
+        "asset_alt": "3dspeaker_speech_campplus_sv_zh-cn_16k-common.onnx",
+        "release_tag": "speaker-recongition-models",
+        "size_bytes": 29596978,
+        "engine": "sherpa-onnx",
+        "license": "Apache-2.0",
+        "eer_voxceleb1o": "0.73% [PRIMARY paper]",
+        "persian_note": "no fa-trained checkpoint — thresholds re-validated on VoxShift data",
+        "status": "TO_INSTALL"
+      },
+      "fallback": { "model": "ECAPA-TDNN", "repo": "speechbrain/spkrec-ecapa-voxceleb", "license": "Apache-2.0" }
+    },
+    {
+      "component": "diarization",
+      "selected": {
+        "model": "online agglomerative clustering over CAM++ embeddings",
+        "engine": "custom (VoxShift pipeline)",
+        "status": "EXISTING v2 ARCHITECTURE, UPGRADE PATH READY"
+      },
+      "rejected": [
+        { "model": "pyannote/diart", "reason": "HF-token-gated models + unverified CPU latency (claim 28ms UNSUPPORTED)" }
+      ]
+    },
+    {
+      "component": "asr",
+      "selected": {
+        "model": "Whisper large-v3-turbo (CT2)",
+        "repo": "deepdml/faster-whisper-large-v3-turbo-ct2",
+        "engine": "faster-whisper>=1.2.1 / CTranslate2",
+        "quantization": "int8",
+        "license": "MIT",
+        "size_gb": 1.6,
+        "status": "TO_DOWNLOAD"
+      },
+      "fallback": { "model": "Whisper large-v3 (CT2)", "repo": "Systran/faster-whisper-large-v3", "quantization": "int8", "license": "MIT" },
+      "streaming_partials_option": { "model": "Vosk small-fa-0.42", "size_mb": 53, "license": "Apache-2.0", "wer": "23.4 CV17 / 14.0 FLEURS [PRIMARY]", "note": "pin 0.42 — newer 0.5 models are worse" }
+    },
+    {
+      "component": "lid",
+      "selected": { "model": "Whisper detect_language + Unicode-script heuristic", "engine": "faster-whisper (no extra cost)", "status": "INTEGRATED" },
+      "fallback": { "model": "VoxLingua107 ECAPA", "repo": "speechbrain/lang-id-voxlingua107-ecapa", "license": "Apache-2.0", "persian": "explicitly supported [PRIMARY]" }
+    },
+    {
+      "component": "translation",
+      "selected": {
+        "model": "qwen2.5:3b-instruct via Ollama",
+        "runtime": "Ollama :11434",
+        "license": "qwen-research (NON-COMMERCIAL) ⚠️",
+        "commercial_swap": ["qwen3:4b-instruct-2507 (Apache-2.0)", "qwen2.5:1.5b-instruct (Apache-2.0)"],
+        "status": "INSTALLED"
+      },
+      "quality_option": {
+        "model": "NLLB-200-distilled-600M ct2-int8",
+        "repo": "facebook/nllb-200-distilled-600M",
+        "license": "CC-BY-NC-4.0 — commercial NEEDS LEGAL REVIEW",
+        "status": "TO_CONVERT"
+      },
+      "license_clean_dedicated": { "model": "M2M100-418M ct2-int8", "repo": "facebook/m2m100_418M", "license": "MIT", "status": "OPTIONAL --full" },
+      "fallback": { "model": "Ollama any installed instruct model", "status": "AVAILABLE" }
+    },
+    {
+      "component": "tts",
+      "selected": {
+        "model_fa": "Piper fa_IR-amir-medium (dataset CC0, MIT) — v1.0.0, 63531379 B",
+        "model_en": "Piper en_US-amy-medium (MIT) — v1.0.0, 63201294 B",
+        "engine": "piper-tts (piper1-gpl) / onnxruntime",
+        "quantization": "fp32 onnx",
+        "status": "TO_INSTALL"
+      },
+      "fallback": { "model": "espeak-ng", "note": "robotic but instant" },
+      "rejected": [{ "model": "fa_IR-gyro-medium", "reason": "dataset license vague ('See URL')" }]
+    },
+    {
+      "component": "voice_cloning",
+      "selected": {
+        "model": "OpenVoice v2 tone-color converter — OFFLINE enrollment pass only",
+        "repo": "myshell-ai/OpenVoiceV2",
+        "license": "MIT (code + weights, commercial OK) [PRIMARY card]",
+        "cpu_reality": "30–120 s per utterance [COMMUNITY] → NOT real-time",
+        "live_path": "Piper + per-contact pitch/formant mapping (existing src/lib/voice/pitch-shift.ts)",
+        "status": "OPTIONAL / OFFLINE-ONLY"
+      },
+      "rejected": [
+        { "model": "XTTS-v2", "reason": "CPML non-commercial" },
+        { "model": "F5-TTS", "reason": "weights CC-BY-NC-4.0" }
+      ],
+      "cloud_option": { "model": "ElevenLabs IVC (existing v1.x integration)", "status": "AVAILABLE" }
+    },
+    {
+      "component": "llm_reasoning",
+      "selected": {
+        "model": "qwen2.5:3b-instruct",
+        "runtime": "Ollama :11434",
+        "license": "qwen-research ⚠️ (same note as translation)",
+        "status": "INSTALLED"
+      }
+    }
+  ],
+  "engines": {
+    "asr_mt": "CTranslate2 (int8, AVX512-VNNI paths confirmed on CPU)",
+    "vad_tts": "onnxruntime",
+    "speaker": "sherpa-onnx",
+    "llm": "Ollama"
+  },
+  "cpu_plan": {
+    "note": "to be finalized from phase-2 benchmarks",
+    "initial_guess": { "asr_intra_threads": 16, "asr_inter_threads": 2, "mt_threads": 8, "tts_threads_per_req": 2, "speaker_threads": 2, "ollama_parallel": 1 }
+  },
+  "benchmark_status": "PENDING — user must run setup_ml_stack.sh, then phase-2 benchmark suite on the actual machine"
+}
