@@ -73,6 +73,10 @@ export interface SettingsCenterProps {
   onSelectProfile: (id: string) => Promise<boolean>
   onClearHistory: () => Promise<void>
   historyCount: number
+  /** v2: user-registered providers + live health (§24/§30). */
+  providerHealth?: { providerId: string; name: string; category: string; state: string; lastError?: string; consecutiveFailures: number }[] | null
+  onRequestProviderHealth?: () => void
+  onReloadProviders?: () => void
 }
 
 export function SettingsCenter(p: SettingsCenterProps) {
@@ -460,6 +464,13 @@ export function SettingsCenter(p: SettingsCenterProps) {
         >
           <PlugZap className="h-3.5 w-3.5" aria-hidden /> Run full self-test (real requests)
         </Button>
+
+        {/* ── Custom providers (v2 §24): bring your own API keys ─────────── */}
+        <CustomProvidersCard
+          health={p.providerHealth ?? null}
+          onRequestHealth={p.onRequestProviderHealth}
+          onReload={p.onReloadProviders}
+        />
       </SettingsSection>
 
       {/* ── Reset (spec §6.6) ─────────────────────────────────────────────── */}
@@ -561,6 +572,292 @@ function ProviderChip({ label, engine, configured }: { label: string; engine?: s
       >
         {state === 'ok' ? 'CONFIGURED' : state === 'missing' ? 'MISSING' : '…'}
       </span>
+    </div>
+  )
+}
+
+// ── Custom providers card (v2 §24) ───────────────────────────────────────────
+// Users register their own OpenAI-compatible endpoints (ASR / translation /
+// TTS). Keys are encrypted at rest server-side and NEVER returned (masked
+// hint only). The failover chain tries these first, then the built-ins, and
+// the ACTUAL provider used is recorded on every result (§23).
+
+const PROVIDER_CATEGORIES = [
+  { id: 'asr', label: 'ASR (speech-to-text)', endpoint: '/audio/transcriptions', model: 'whisper-1' },
+  { id: 'translate', label: 'Translation (LLM)', endpoint: '/chat/completions', model: 'gpt-4o-mini' },
+  { id: 'tts', label: 'TTS (speech synthesis)', endpoint: '/audio/speech', model: 'tts-1' },
+] as const
+
+interface ProviderRowMasked {
+  id: string
+  category: string
+  name: string
+  baseUrl: string
+  model: string | null
+  voiceId: string | null
+  hasKey: boolean
+  keyHint: string | null
+  priority: number
+  enabled: boolean
+}
+
+function CustomProvidersCard({
+  health,
+  onRequestHealth,
+  onReload,
+}: {
+  health: { providerId: string; name: string; category: string; state: string; lastError?: string; consecutiveFailures: number }[] | null
+  onRequestHealth?: () => void
+  onReload?: () => void
+}) {
+  const [rows, setRows] = useState<ProviderRowMasked[] | null>(null)
+  const [formOpen, setFormOpen] = useState(false)
+  const [category, setCategory] = useState<'asr' | 'translate' | 'tts'>('translate')
+  const [name, setName] = useState('')
+  const [baseUrl, setBaseUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [model, setModel] = useState('')
+  const [voiceId, setVoiceId] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  const load = async () => {
+    try {
+      const res = await fetch('/api/providers', { cache: 'no-store' })
+      const data = await res.json()
+      setRows(Array.isArray(data?.providers) ? data.providers : [])
+    } catch {
+      setRows([])
+    }
+  }
+
+  useEffect(() => {
+    void load()
+  }, [])
+
+  const healthOf = (id: string) => health?.find((h) => h.providerId === id)
+
+  const create = async () => {
+    if (!name.trim() || !baseUrl.trim() || !apiKey.trim()) return
+    setBusy('create')
+    setMsg(null)
+    try {
+      const res = await fetch('/api/providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, name: name.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: model.trim() || undefined, voiceId: voiceId.trim() || undefined }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data?.error ?? 'Request failed')
+      setName('')
+      setBaseUrl('')
+      setApiKey('')
+      setModel('')
+      setVoiceId('')
+      setFormOpen(false)
+      setMsg({ kind: 'ok', text: `“${data.provider.name}” saved — it is now FIRST in the failover chain for ${category}.` })
+      await load()
+      onReload?.()
+    } catch (err) {
+      setMsg({ kind: 'err', text: err instanceof Error ? err.message : 'Could not save the provider' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const testProvider = async (id: string) => {
+    setBusy(id)
+    setMsg(null)
+    try {
+      const res = await fetch(`/api/providers?action=test&id=${encodeURIComponent(id)}`, { method: 'POST' })
+      const data = await res.json()
+      if (data.ok) {
+        setMsg({ kind: 'ok', text: `Connection OK (${data.ms} ms)${data.detail ? ` — ${JSON.stringify(data.detail).slice(0, 140)}` : ''}` })
+      } else {
+        setMsg({ kind: 'err', text: `Real test failed (${data.code ?? 'ERROR'}, ${data.ms ?? 0} ms): ${data.message ?? 'unknown'}` })
+      }
+      onRequestHealth?.()
+    } catch {
+      setMsg({ kind: 'err', text: 'The test request itself failed — backend unreachable.' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const toggle = async (row: ProviderRowMasked) => {
+    setBusy(row.id)
+    try {
+      await fetch('/api/providers', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: row.id, enabled: !row.enabled }),
+      })
+      await load()
+      onReload?.()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const remove = async (id: string) => {
+    setBusy(id)
+    try {
+      await fetch(`/api/providers?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+      await load()
+      onReload?.()
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-1.5 text-[11px] font-semibold text-zinc-300">
+          <KeyRound className="h-3.5 w-3.5 text-teal-400" aria-hidden /> Custom providers (bring your own API)
+        </p>
+        <div className="flex items-center gap-1.5">
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" onClick={() => onRequestHealth?.()} title="Request live health from the engine">
+            Refresh health
+          </Button>
+          <Button variant="outline" size="sm" className="h-7 gap-1 border-zinc-700 bg-zinc-900 px-2 text-[11px]" onClick={() => setFormOpen((v) => !v)}>
+            {formOpen ? 'Close' : 'Add provider'}
+          </Button>
+        </div>
+      </div>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
+        OpenAI-compatible endpoints are tried BEFORE the built-in engines, in priority order, with automatic
+        failover. Keys are AES-256-GCM encrypted on the server and never returned to the browser.
+      </p>
+
+      {formOpen && (
+        <div className="mt-3 grid gap-2 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 sm:grid-cols-2">
+          <label className="block sm:col-span-2">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Category</span>
+            <div className="flex flex-wrap gap-1.5">
+              {PROVIDER_CATEGORIES.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setCategory(c.id)}
+                  className={cn(
+                    'rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                    category === c.id
+                      ? 'border-emerald-700/60 bg-emerald-950/40 text-emerald-300'
+                      : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+                  )}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+            <span className="mt-1 block font-mono text-[10px] text-zinc-600">
+              {PROVIDER_CATEGORIES.find((c) => c.id === category)?.endpoint}
+            </span>
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Display name</span>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My OpenAI" className="h-8 text-xs" />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Base URL</span>
+            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="h-8 text-xs" />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">API key (stored encrypted)</span>
+            <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" className="h-8 text-xs" autoComplete="off" />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+              Model{category === 'tts' ? ' + Voice ID (optional)' : ' (optional)'}
+            </span>
+            <div className="flex gap-1.5">
+              <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={PROVIDER_CATEGORIES.find((c) => c.id === category)?.model} className="h-8 text-xs" />
+              {category === 'tts' && (
+                <Input value={voiceId} onChange={(e) => setVoiceId(e.target.value)} placeholder="voice" className="h-8 w-24 text-xs" />
+              )}
+            </div>
+          </label>
+          <div className="sm:col-span-2">
+            <Button size="sm" onClick={() => void create()} disabled={busy === 'create' || !name.trim() || !baseUrl.trim() || !apiKey.trim()} className="h-8 bg-emerald-600 text-xs text-white hover:bg-emerald-500">
+              Save provider
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {msg && (
+        <p
+          className={cn(
+            'mt-2 rounded-lg border px-3 py-2 text-[11px] leading-relaxed',
+            msg.kind === 'ok'
+              ? 'border-emerald-900/50 bg-emerald-950/30 text-emerald-200'
+              : 'border-amber-900/50 bg-amber-950/30 text-amber-200'
+          )}
+          role="status"
+        >
+          {msg.text}
+        </p>
+      )}
+
+      <ul className="mt-2 space-y-1.5">
+        {rows === null ? (
+          <li className="py-2 text-center text-[11px] text-zinc-600">Loading…</li>
+        ) : rows.length === 0 ? (
+          <li className="rounded-lg border border-dashed border-zinc-800 px-3 py-3 text-center text-[11px] text-zinc-600">
+            No custom providers — the built-in engines serve every stage. Add one to route through your own keys.
+          </li>
+        ) : (
+          rows.map((r) => {
+            const h = healthOf(r.id)
+            const state = !r.enabled ? 'DISABLED' : (h?.state ?? 'READY')
+            return (
+              <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-zinc-800 bg-zinc-900/70 px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-[11px] font-semibold text-zinc-200">
+                    {r.name}
+                    <span className="ml-1.5 font-mono text-[9px] uppercase text-zinc-600">{r.category}</span>
+                  </p>
+                  <p className="truncate font-mono text-[10px] text-zinc-600">
+                    {r.baseUrl}
+                    {r.model ? ` · ${r.model}` : ''}
+                    {r.hasKey ? ` · key …${r.keyHint ?? '••••'}` : ' · NO KEY'}
+                  </p>
+                  {h?.lastError && (
+                    <p className="truncate text-[10px] text-amber-500/90" title={h.lastError}>
+                      {h.lastError}
+                    </p>
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <span
+                    className={cn(
+                      'rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider',
+                      state === 'READY'
+                        ? 'border-emerald-700/60 bg-emerald-950/40 text-emerald-400'
+                        : state === 'DISABLED'
+                          ? 'border-zinc-700 bg-zinc-900 text-zinc-500'
+                          : 'border-amber-700/60 bg-amber-950/40 text-amber-400'
+                    )}
+                    title={`Provider health state (real, from the engine): ${state}`}
+                  >
+                    {state}
+                  </span>
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" disabled={busy === r.id} onClick={() => void testProvider(r.id)}>
+                    Test
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px]" disabled={busy === r.id} onClick={() => void toggle(r)}>
+                    {r.enabled ? 'Disable' : 'Enable'}
+                  </Button>
+                  <Button variant="ghost" size="sm" className="h-7 px-2 text-[11px] text-red-400 hover:text-red-300" disabled={busy === r.id} onClick={() => void remove(r.id)}>
+                    Delete
+                  </Button>
+                </div>
+              </li>
+            )
+          })
+        )}
+      </ul>
     </div>
   )
 }

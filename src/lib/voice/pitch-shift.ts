@@ -4,7 +4,7 @@
 // auditions reproduce the exact pitch-conformed audio the pipeline generates.
 // ─────────────────────────────────────────────────────────────────────────────
 
-function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample = 16): Buffer {
+export function pcmToWav(pcm: Buffer, sampleRate: number, channels = 1, bitsPerSample = 16): Buffer {
   const blockAlign = (channels * bitsPerSample) / 8
   const byteRate = sampleRate * blockAlign
   const dataSize = pcm.length

@@ -16,7 +16,8 @@ import type {
   Mode,
   OtherLang,
   PipelineStage,
-  SpeakerRole,
+  ProviderHealthData,
+  SpeakerInfo,
   StyleMode,
   StageEvent,
   ThreadDetailData,
@@ -27,7 +28,9 @@ import type {
   UIPrefs,
   UtteranceError,
   UtteranceResult,
+  VoiceContactData,
 } from '@/types/translator'
+import type { SpeakerRole } from '@/types/translator'
 import { getLangPair } from '@/types/translator'
 import { useToast } from '@/hooks/use-toast'
 
@@ -80,6 +83,12 @@ export interface TranscriptEntry {
   targetLang: string
   /** Speaker turn ('A' default) — manual attribution, no engine diarization. */
   speakerRole?: SpeakerRole
+  /** Speaker recognition (v2): stable cluster id + honest status. Names are
+   *  resolved through the session speaker map so identifying an unknown
+   *  speaker retroactively renames every transcript entry (spec §11/§12). */
+  speakerKey?: string
+  speakerStatus?: SpeakerInfo['status']
+  speakerConfidence?: number
   /** True when synthesized audio was delivered and may be replayable. */
   hasAudio: boolean
   createdAt: number
@@ -103,6 +112,8 @@ export interface TranslationPartial {
   targetLang: string
   voice: string
   speakerRole?: SpeakerRole
+  speakerKey?: string
+  speakerStatus?: SpeakerInfo['status']
 }
 
 /** Live caption — partial ASR text while the user is still speaking. */
@@ -267,6 +278,26 @@ export function useTranslator() {
   const [showCaptions, setShowCaptionsState] = useState(true)
   /** All enrolled voice profiles (spec §5.2 — multiple profiles). */
   const [profiles, setProfiles] = useState<VoiceProfileData[]>([])
+  // ── Voice Contacts + speaker recognition (master prompt v2) ────────────
+  /** Persisted contacts (recognized people) — synced to the recognizer. */
+  const [contacts, setContacts] = useState<VoiceContactData[]>([])
+  const [contactsLoading, setContactsLoading] = useState(true)
+  /** Session speaker map: clusterKey → display info. Names resolve through
+   *  this map, so identifying "Unknown 1" renames the whole transcript. */
+  const [speakers, setSpeakers] = useState<Record<string, SpeakerInfo>>({})
+  const speakersRef = useRef<Record<string, SpeakerInfo>>({})
+  /** "Identify Person" flow state (spec §6/§7/§11). */
+  const [identify, setIdentify] = useState<{
+    clusterKey: string
+    phase: 'loading' | 'ready' | 'saving'
+    sample?: { wavBase64: string; sampleRate: number; durationSec: number; speechSec: number }
+    error?: string
+  } | null>(null)
+  /** Live provider health (socket channel — real states, never faked). */
+  const [providerHealth, setProviderHealth] = useState<ProviderHealthData[] | null>(null)
+  /** Providers used by the last completed utterance (per-result honesty). */
+  const [lastProviders, setLastProviders] = useState<UtteranceResult['providers'] | null>(null)
+  const contactsRef = useRef<VoiceContactData[]>([])
   /** Behavior-toggle refs (kept beside the states they mirror). */
   const autoSaveRef = useRef(autoSaveHistory)
   const useContextRef = useRef(useContext)
@@ -321,6 +352,8 @@ export function useTranslator() {
   autoDetectRef.current = autoDetect
   betaLangsRef.current = betaLangs
   speakerRef.current = speaker
+  speakersRef.current = speakers
+  contactsRef.current = contacts
 
   // ── Voice profiles (REST) ────────────────────────────────────────────────
   const loadProfile = useCallback(async () => {
@@ -692,11 +725,329 @@ export function useTranslator() {
     [toast]
   )
 
+  // ── Voice Contacts (master prompt v2 — persistent speaker recognition) ──
+
+  /** Push the contact list (with voiceprints) to the local recognizer. */
+  const syncContactsToEngine = useCallback((list: VoiceContactData[]) => {
+    const socket = getTranslatorSocket()
+    if (!socket.connected) return
+    socket.emit('contacts:sync', {
+      contacts: list
+        .filter((c) => Array.isArray(c.vector) && c.vector.length > 0)
+        .map((c) => ({
+          contactId: c.id,
+          name: c.name,
+          vector: c.vector,
+          threshold: c.confidenceThreshold,
+          disabled: c.disabled,
+        })),
+    })
+  }, [])
+
+  const loadContacts = useCallback(
+    async (silent = false) => {
+      if (!silent) setContactsLoading(true)
+      try {
+        const res = await fetch('/api/voice-contacts', { cache: 'no-store' })
+        const data = await res.json()
+        const list: VoiceContactData[] = Array.isArray(data?.contacts) ? data.contacts : []
+        setContacts(list)
+        syncContactsToEngine(list)
+        return list
+      } catch {
+        return []
+      } finally {
+        setContactsLoading(false)
+      }
+    },
+    [syncContactsToEngine]
+  )
+
+  useEffect(() => {
+    void loadContacts()
+  }, [loadContacts])
+
+  /**
+   * Create a contact from a voice sample (spec §8): raw PCM from the recorder
+   * OR the WAV sample assembled by the engine from live speech. Consent is
+   * mandatory. On success the recognizer learns the new voice immediately.
+   */
+  const createContact = useCallback(
+    async (input: {
+      name: string
+      audioBase64: string
+      sampleRate: number
+      consented: boolean
+      language?: string
+      fromCluster?: string
+    }): Promise<VoiceContactData | null> => {
+      try {
+        const res = await fetch('/api/voice-contacts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data?.error ?? 'Request failed')
+        const list = await loadContacts(true)
+        const contact = data.contact as VoiceContactData
+        // Attach the fresh voiceprint to the live cluster so THIS session's
+        // future utterances match too (spec §9 + §11 instant rename).
+        if (input.fromCluster && Array.isArray(contact.vector)) {
+          getTranslatorSocket().emit('speakers:label', {
+            clusterKey: input.fromCluster,
+            contactId: contact.id,
+            name: contact.name,
+            vector: contact.vector,
+          })
+          setSpeakers((prev) => ({
+            ...prev,
+            [input.fromCluster!]: {
+              clusterKey: input.fromCluster!,
+              contactId: contact.id,
+              name: contact.name,
+              status: 'verified',
+              confidence: undefined,
+            },
+          }))
+        }
+        void list
+        return contact
+      } catch (err) {
+        toast({
+          title: 'Could not save the contact',
+          description: err instanceof Error ? err.message : 'Unknown error',
+          variant: 'destructive',
+        })
+        return null
+      }
+    },
+    [loadContacts, toast]
+  )
+
+  /** Rename / enable-disable / adjust a contact's threshold (spec §10/§18). */
+  const updateContact = useCallback(
+    async (id: string, patch: { name?: string; disabled?: boolean; confidenceThreshold?: number }): Promise<boolean> => {
+      try {
+        const res = await fetch(`/api/voice-contacts/${encodeURIComponent(id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(patch),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data?.error ?? 'Request failed')
+        const list = await loadContacts(true)
+        // Renames propagate to the current transcript instantly.
+        if (patch.name) {
+          setSpeakers((prev) => {
+            const next = { ...prev }
+            for (const [key, info] of Object.entries(next)) {
+              if (info.contactId === id) next[key] = { ...info, name: patch.name }
+            }
+            return next
+          })
+        }
+        void list
+        return true
+      } catch (err) {
+        toast({
+          title: 'Could not update the contact',
+          description: err instanceof Error ? err.message : undefined,
+          variant: 'destructive',
+        })
+        return false
+      }
+    },
+    [loadContacts, toast]
+  )
+
+  /** Delete a contact (profile + reference audio) — explicit, confirmable. */
+  const deleteContact = useCallback(
+    async (id: string): Promise<boolean> => {
+      try {
+        const res = await fetch(`/api/voice-contacts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        if (!res.ok) throw new Error('Request failed')
+        await loadContacts(true)
+        setSpeakers((prev) => {
+          const next = { ...prev }
+          for (const [key, info] of Object.entries(next)) {
+            if (info.contactId === id) next[key] = { ...info, contactId: undefined, status: 'unknown' }
+          }
+          return next
+        })
+        toast({ title: 'Voice contact deleted', description: 'The voice profile and its reference audio were removed.' })
+        return true
+      } catch {
+        toast({ title: 'Could not delete the contact', variant: 'destructive' })
+        return false
+      }
+    },
+    [loadContacts, toast]
+  )
+
+  /** Re-enroll a contact with a fresh sample (spec §10 "Re-enroll"). */
+  const reenrollContact = useCallback(
+    async (id: string, audioBase64: string, sampleRate: number, consented: boolean, merge = true) => {
+      try {
+        const res = await fetch(`/api/voice-contacts/${encodeURIComponent(id)}/reenroll`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ audioBase64, sampleRate, consented, merge }),
+        })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data?.error ?? 'Request failed')
+        await loadContacts(true)
+        return data as { ok: true; quality: { snrDb: number; speechSec: number; meanF0: number } }
+      } catch (err) {
+        toast({
+          title: 'Re-enroll failed',
+          description: err instanceof Error ? err.message : undefined,
+          variant: 'destructive',
+        })
+        return null
+      }
+    },
+    [loadContacts, toast]
+  )
+
+  // ── Identify flow (spec §6/§7/§11): unknown speaker → named contact ─────
+
+  /** Ask the engine for the collected (~10 s) sample of an unknown speaker. */
+  const startIdentify = useCallback((clusterKey: string) => {
+    const socket = getTranslatorSocket()
+    setIdentify({ clusterKey, phase: 'loading' })
+    if (!socket.connected) {
+      setIdentify({
+        clusterKey,
+        phase: 'ready',
+        error: 'The real-time engine is offline — samples are assembled from the live session.',
+      })
+      return
+    }
+    socket.emit('speakers:identify', { clusterKey })
+  }, [])
+
+  const cancelIdentify = useCallback(() => setIdentify(null), [])
+
+  /** Persist the current speaker registry to the open thread (stable ids). */
+  const persistSpeakerRegistry = useCallback(() => {
+    const conversationId = activeThreadIdRef.current
+    if (!conversationId) return
+    const registry = Object.values(speakersRef.current).map((s) => ({
+      clusterKey: s.clusterKey,
+      contactId: s.contactId ?? null,
+      displayName: s.name ?? null,
+    }))
+    void fetch(`/api/conversations/${conversationId}/speakers`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ speakers: registry }),
+    }).catch(() => {})
+  }, [])
+
+  /** Save the identified person as a Voice Contact (spec §8). */
+  const confirmIdentify = useCallback(
+    async (name: string, language?: string) => {
+      const idState = identify
+      if (!idState?.sample) return false
+      setIdentify({ ...idState, phase: 'saving' })
+      const created = await createContact({
+        name,
+        audioBase64: idState.sample.wavBase64,
+        sampleRate: idState.sample.sampleRate,
+        consented: true,
+        language,
+        fromCluster: idState.clusterKey,
+      })
+      if (created) {
+        setIdentify(null)
+        toast({
+          title: `${name} saved ✓`,
+          description: 'This voice is now recognized automatically in future conversations.',
+        })
+        persistSpeakerRegistry()
+      }
+      return Boolean(created)
+    },
+    [createContact, identify, toast]
+  )
+
+  /** Ambiguous match (spec §14): user confirms a candidate or stays Unknown. */
+  const confirmCandidate = useCallback(
+    (clusterKey: string, contactId: string, contactName: string) => {
+      getTranslatorSocket().emit('speakers:label', { clusterKey, contactId, name: contactName })
+      setSpeakers((prev) => ({
+        ...prev,
+        [clusterKey]: { clusterKey, contactId, name: contactName, status: 'verified' },
+      }))
+      persistSpeakerRegistry()
+    },
+    []
+  )
+
+  const keepUnknown = useCallback((clusterKey: string) => {
+    setSpeakers((prev) => {
+      const cur = prev[clusterKey]
+      if (!cur) return prev
+      const { candidates: _drop, ...rest } = cur
+      return { ...prev, [clusterKey]: { ...rest, status: 'unknown' as const } }
+    })
+    persistSpeakerRegistry()
+  }, [])
+
+  /** Correct a speaker in the CURRENT session (spec §18): pick a contact or
+   *  set a temporary label. Permanent profile changes go through Contacts. */
+  const correctSpeaker = useCallback((clusterKey: string, contactId: string | null, name: string) => {
+    getTranslatorSocket().emit('speakers:label', {
+      clusterKey,
+      contactId,
+      name,
+      vector: contactId ? contactsRef.current.find((c) => c.id === contactId)?.vector ?? undefined : undefined,
+    })
+    setSpeakers((prev) => ({
+      ...prev,
+      [clusterKey]: {
+        clusterKey,
+        contactId: contactId ?? undefined,
+        name,
+        status: contactId ? 'verified' : 'unknown',
+      },
+    }))
+    persistSpeakerRegistry()
+  }, [])
+
+  // ── Provider health (§30) ────────────────────────────────────────────────
+  const requestProviderHealth = useCallback(() => {
+    const socket = getTranslatorSocket()
+    if (!socket.connected) return
+    socket.emit('providers:health')
+  }, [])
+
+  const reloadProviders = useCallback(() => {
+    const socket = getTranslatorSocket()
+    if (socket.connected) socket.emit('providers:reload')
+  }, [])
+
   // ── Socket lifecycle ────────────────────────────────────────────────────
   useEffect(() => {
     const socket = getTranslatorSocket()
 
-    const onConnect = () => setConnected(true)
+    const onConnect = () => {
+      setConnected(true)
+      // Announce identity + sync enrolled contacts so the recognizer matches
+      // voices from the first utterance (spec v2 §9/§17).
+      socket.emit('session:init', {
+        contacts: contactsRef.current
+          .filter((c) => Array.isArray(c.vector) && c.vector.length > 0)
+          .map((c) => ({
+            contactId: c.id,
+            name: c.name,
+            vector: c.vector,
+            threshold: c.confidenceThreshold,
+            disabled: c.disabled,
+          })),
+      })
+    }
     const onDisconnect = () => {
       setConnected(false)
       if (statusRef.current !== 'idle') setStatus('reconnecting')
@@ -712,6 +1063,9 @@ export function useTranslator() {
     }
 
     const onTranslation = (event: TranslationEvent) => {
+      if (event.speaker) {
+        setSpeakers((prev) => ({ ...prev, [event.speaker!.clusterKey]: event.speaker! }))
+      }
       setPartial({
         utteranceId: event.utteranceId,
         source: event.sourceText,
@@ -720,6 +1074,8 @@ export function useTranslator() {
         targetLang: event.targetLang,
         voice: event.voice,
         speakerRole: event.speakerRole,
+        speakerKey: event.speaker?.clusterKey,
+        speakerStatus: event.speaker?.status,
       })
     }
 
@@ -742,6 +1098,12 @@ export function useTranslator() {
       setPendingCount((c) => Math.max(0, c - 1))
       if (!result.sourceText && !result.translatedText) return // silence/noise segment
 
+      // Speaker recognition: register the attribution (names resolve later).
+      if (result.speaker) {
+        setSpeakers((prev) => ({ ...prev, [result.speaker!.clusterKey]: result.speaker! }))
+      }
+      if (result.providers) setLastProviders(result.providers)
+
       const entry: TranscriptEntry = {
         id: result.utteranceId,
         source: result.sourceText,
@@ -752,6 +1114,9 @@ export function useTranslator() {
         sourceLang: result.sourceLang ?? langPairRef.current.sourceLang,
         targetLang: result.targetLang ?? langPairRef.current.targetLang,
         speakerRole: result.speakerRole ?? 'A',
+        speakerKey: result.speaker?.clusterKey,
+        speakerStatus: result.speaker?.status,
+        speakerConfidence: result.speaker?.confidence,
         hasAudio: Boolean(result.audioBase64),
         createdAt: Date.now(),
       }
@@ -817,6 +1182,15 @@ export function useTranslator() {
             voice: entry.voiceMode === 'clone' ? 'your voice (clone)' : entry.voice,
             timings: entry.timings,
             historyEntryId,
+            // Speaker recognition fields (v2 §28) — keep attribution stable.
+            speakerKey: entry.speakerKey ?? null,
+            speakerContactId: speakersRef.current[entry.speakerKey ?? '']?.contactId ?? null,
+            speakerName:
+              speakersRef.current[entry.speakerKey ?? '']?.name ??
+              (entry.speakerRole === 'B' ? 'Speaker B' : 'Speaker A'),
+            identificationStatus:
+              speakersRef.current[entry.speakerKey ?? '']?.status ?? null,
+            speakerConfidence: entry.speakerConfidence ?? null,
           }),
         })
           .then((res) => (res.ok ? res.json() : null))
@@ -836,6 +1210,11 @@ export function useTranslator() {
               timings: entry.timings,
               historyEntryId,
               processingStatus: 'complete',
+              speakerKey: entry.speakerKey ?? null,
+              speakerContactId: speakersRef.current[entry.speakerKey ?? '']?.contactId ?? null,
+              speakerName: speakersRef.current[entry.speakerKey ?? '']?.name ?? null,
+              identificationStatus: speakersRef.current[entry.speakerKey ?? '']?.status ?? null,
+              speakerConfidence: entry.speakerConfidence ?? null,
               createdAt: msgData.message.createdAt,
             }
             setActiveThread((prev) =>
@@ -931,7 +1310,58 @@ export function useTranslator() {
     socket.on('result', onResult)
     socket.on('utterance:error', onUtteranceError)
 
-    if (socket.connected) setConnected(true)
+    // ── v2: speaker recognition + identify flow ────────────────────────────
+    const onSpeakersSample = (data: {
+      clusterKey: string
+      wavBase64: string
+      sampleRate: number
+      durationSec: number
+      speechSec: number
+    }) => {
+      setIdentify((cur) =>
+        cur && cur.clusterKey === data.clusterKey
+          ? {
+              ...cur,
+              phase: 'ready',
+              sample: {
+                wavBase64: data.wavBase64,
+                sampleRate: data.sampleRate,
+                durationSec: data.durationSec,
+                speechSec: data.speechSec,
+              },
+            }
+          : cur
+      )
+    }
+    const onSpeakersSampleError = (data: { clusterKey: string; message: string }) => {
+      setIdentify((cur) => (cur && cur.clusterKey === data.clusterKey ? { ...cur, phase: 'ready', error: data.message } : cur))
+    }
+    const onSpeakersLabeled = (info: SpeakerInfo | { clusterKey: string }) => {
+      if (!('status' in info)) return
+      setSpeakers((prev) => ({ ...prev, [info.clusterKey]: info }))
+    }
+    const onProvidersHealth = (data: { providers: ProviderHealthData[] }) => {
+      setProviderHealth(Array.isArray(data?.providers) ? data.providers : [])
+    }
+    socket.on('speakers:sample', onSpeakersSample)
+    socket.on('speakers:sample:error', onSpeakersSampleError)
+    socket.on('speakers:labeled', onSpeakersLabeled)
+    socket.on('providers:health', onProvidersHealth)
+
+    if (socket.connected) {
+      setConnected(true)
+      socket.emit('session:init', {
+        contacts: contactsRef.current
+          .filter((c) => Array.isArray(c.vector) && c.vector.length > 0)
+          .map((c) => ({
+            contactId: c.id,
+            name: c.name,
+            vector: c.vector,
+            threshold: c.confidenceThreshold,
+            disabled: c.disabled,
+          })),
+      })
+    }
 
     return () => {
       socket.off('connect', onConnect)
@@ -942,6 +1372,10 @@ export function useTranslator() {
       socket.off('asr:partial:result', onAsrPartial)
       socket.off('result', onResult)
       socket.off('utterance:error', onUtteranceError)
+      socket.off('speakers:sample', onSpeakersSample)
+      socket.off('speakers:sample:error', onSpeakersSampleError)
+      socket.off('speakers:labeled', onSpeakersLabeled)
+      socket.off('providers:health', onProvidersHealth)
     }
   }, [toast, ensureHistorySessionId])
 
@@ -1040,7 +1474,8 @@ export function useTranslator() {
     // typed-phrase streak) starts a fresh one. A thread session ends with it.
     historySessionIdRef.current = null
     endThreadSession()
-  }, [endThreadSession, resetCaptionState])
+    persistSpeakerRegistry()
+  }, [endThreadSession, persistSpeakerRegistry, resetCaptionState])
 
   const start = useCallback(async () => {
     if (recorderRef.current) return
@@ -1177,6 +1612,8 @@ export function useTranslator() {
     setPendingCount(0)
     setSessionSpeechMs(0)
     setSessionLangs([])
+    setSpeakers({})
+    setLastProviders(null)
     setStats({ count: 0, lastTotalMs: 0, avgTotalMs: 0, avgAsrMs: 0, avgTranslateMs: 0, avgTtsMs: 0, minTotalMs: 0, maxTotalMs: 0 })
   }, [resetCaptionState])
 
@@ -1481,6 +1918,34 @@ export function useTranslator() {
         }
         activeThreadIdRef.current = id
         setActiveThread(data)
+        // ── Speaker registry continuity (spec v2 §12/§17): seed the live
+        // tracker with this conversation's stored clusters so ids stay stable
+        // across sessions, and prefill the local name map.
+        if (Array.isArray(data.speakers) && data.speakers.length > 0) {
+          const socket = getTranslatorSocket()
+          socket.emit('speakers:seed', {
+            clusters: data.speakers.map((s) => ({
+              clusterKey: s.clusterKey,
+              contactId: s.contactId,
+              name: s.displayName,
+              vector: s.vector,
+            })),
+          })
+          setSpeakers((prev) => {
+            const next = { ...prev }
+            for (const s of data.speakers!) {
+              if (!next[s.clusterKey]) {
+                next[s.clusterKey] = {
+                  clusterKey: s.clusterKey,
+                  contactId: s.contactId ?? undefined,
+                  name: s.displayName ?? undefined,
+                  status: s.contactId ? 'verified' : 'unknown',
+                }
+              }
+            }
+            return next
+          })
+        }
         const o = data.conversation.overrides
         if (o) {
           if (o.mode) setMode(o.mode)
@@ -1534,8 +1999,9 @@ export function useTranslator() {
     setThreadProfileId(null)
     activeThreadIdRef.current = null
     setActiveThread(null)
+    persistSpeakerRegistry()
     void loadConversations()
-  }, [loadConversations, setBigButton, setMode, setOtherLang, setPlaybackRate, setStyle, setVoiceMode])
+  }, [loadConversations, persistSpeakerRegistry, setBigButton, setMode, setOtherLang, setPlaybackRate, setStyle, setVoiceMode])
 
   const createConversation = useCallback(
     async (title?: string) => {
@@ -1796,6 +2262,27 @@ export function useTranslator() {
     renameConversation,
     deleteConversation,
     saveThreadOverrides,
+    // ── Voice Contacts + speaker recognition (master prompt v2) ────────────
+    contacts,
+    contactsLoading,
+    loadContacts,
+    createContact,
+    updateContact,
+    deleteContact,
+    reenrollContact,
+    speakers,
+    identify,
+    startIdentify,
+    cancelIdentify,
+    confirmIdentify,
+    confirmCandidate,
+    keepUnknown,
+    correctSpeaker,
+    // ── Provider routing / health (v2 §30/§31) ─────────────────────────────
+    providerHealth,
+    requestProviderHealth,
+    reloadProviders,
+    lastProviders,
   }
 }
 

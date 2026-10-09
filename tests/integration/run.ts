@@ -254,6 +254,211 @@ async function main() {
     report({ name: 'voice cloning capability check', status: 'fail', detail: String(err) })
   }
 
+  // ══ v2 (master prompt): speaker recognition + contacts + providers ═════════
+
+  // ── 7. Local speaker engine: REAL voiceprint separation ──────────────────
+  try {
+    const { computeVoiceprint, cosineSimilarity } = await import('../../src/lib/speaker/voiceprint')
+    const synth = (f0: number, brightness: number): Int16Array => {
+      const sr = 16000
+      const out = new Int16Array(sr * 3)
+      for (let i = 0; i < out.length; i++) {
+        const t = i / sr
+        const phase = 2 * Math.PI * f0 * (1 + 0.02 * Math.sin(2 * Math.PI * 2.1 * t)) * t
+        const env = 0.6 + 0.4 * Math.sin(2 * Math.PI * 2.7 * t)
+        const v = env * (Math.sin(phase) + 0.45 * Math.sin(2 * phase) + brightness * (0.25 * Math.sin(5 * phase) + 0.12 * Math.sin(8 * phase)))
+        out[i] = Math.round(Math.max(-1, Math.min(1, v * 0.4)) * 32767)
+      }
+      return out
+    }
+    const a1 = computeVoiceprint(synth(120, 0.2), 16000)
+    const a2 = computeVoiceprint(synth(120, 0.2), 16000)
+    const b = computeVoiceprint(synth(230, 0.7), 16000)
+    if (!a1 || !a2 || !b) throw new Error('voiceprint null for valid signal')
+    const self = cosineSimilarity(a1.vector, a2.vector)
+    const cross = cosineSimilarity(a1.vector, b.vector)
+    if (self > 0.95 && self - cross > 0.08) {
+      report({ name: 'speaker engine: voiceprint separation (local DSP)', status: 'pass', detail: `self ${self.toFixed(3)} vs cross ${cross.toFixed(3)}` })
+    } else {
+      report({ name: 'speaker engine: voiceprint separation', status: 'fail', detail: `self ${self.toFixed(3)} cross ${cross.toFixed(3)}` })
+    }
+  } catch (err) {
+    report({ name: 'speaker engine', status: 'fail', detail: String(err) })
+  }
+
+  // ── 8. Voice contacts lifecycle (real WAV → create → manage → delete) ────
+  let contactId: string | null = null
+  try {
+    const wav = makeTestWav(16000, 4.5, 120, 0.2)
+    const create = await fetch(`${BASE}/api/voice-contacts`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ name: 'IT Probe Speaker', audioBase64: wav.toString('base64'), sampleRate: 16000, consented: true, language: 'fa' }),
+    })
+    capture(create)
+    const cdata = await create.json()
+    if (!create.ok) throw new Error(cdata?.error ?? `HTTP ${create.status}`)
+    contactId = cdata.contact.id
+    const q = cdata.contact.quality
+    if (!cdata.contact.vector || cdata.contact.vectorDim !== 57 || !q) throw new Error('voiceprint/quality missing')
+    report({ name: 'contacts: create with real voiceprint (57-dim)', status: 'pass', detail: `speech ${q.speechSec}s, F0 ${q.meanF0} Hz` })
+
+    // rename + disable + threshold
+    const patch = await fetch(`${BASE}/api/voice-contacts/${contactId}`, {
+      method: 'PATCH',
+      headers: headers(),
+      body: JSON.stringify({ name: 'IT Renamed Speaker', disabled: true, confidenceThreshold: 0.92 }),
+    })
+    capture(patch)
+    const pdata = await patch.json()
+    if (!patch.ok || pdata.contact?.name !== 'IT Renamed Speaker' || pdata.contact?.disabled !== true) throw new Error('PATCH failed')
+    report({ name: 'contacts: rename + pause recognition + threshold', status: 'pass' })
+
+    // re-enroll (merge a second sample)
+    const wav2 = makeTestWav(16000, 4.0, 122, 0.25)
+    const reenroll = await fetch(`${BASE}/api/voice-contacts/${contactId}/reenroll`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ audioBase64: wav2.toString('base64'), sampleRate: 16000, consented: true, merge: true }),
+    })
+    capture(reenroll)
+    const rdata = await reenroll.json()
+    if (!reenroll.ok || rdata.mergedWith !== 2) throw new Error(rdata?.error ?? 'merge failed')
+    report({ name: 'contacts: re-enroll merges voiceprints', status: 'pass', detail: `merged ${rdata.mergedWith} samples` })
+
+    // reference audio (ownership-checked)
+    const audio = await fetch(`${BASE}/api/voice-contacts/${contactId}/audio`, { headers: headers() })
+    capture(audio)
+    const bytes = new Uint8Array(await audio.arrayBuffer())
+    const isWav = bytes.length > 44 && String.fromCharCode(...bytes.slice(0, 4)) === 'RIFF'
+    if (!audio.ok || !isWav) throw new Error(`audio fetch ${audio.status}`)
+    report({ name: 'contacts: reference audio playback (RIFF WAV)', status: 'pass', detail: `${bytes.length} bytes` })
+
+    // ownership: no cookie → 404
+    const stranger = await fetch(`${BASE}/api/voice-contacts/${contactId}/audio`)
+    if (stranger.status === 404 || stranger.status === 401) {
+      report({ name: 'contacts: ownership enforced (no cookie → 404)', status: 'pass' })
+    } else {
+      report({ name: 'contacts: ownership enforced', status: 'fail', detail: `stranger got HTTP ${stranger.status}` })
+    }
+
+    // consent is mandatory
+    const noConsent = await fetch(`${BASE}/api/voice-contacts`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ name: 'X', audioBase64: wav.toString('base64'), sampleRate: 16000, consented: false }),
+    })
+    if (noConsent.status === 400) {
+      report({ name: 'contacts: enrollment requires explicit consent (§33)', status: 'pass' })
+    } else {
+      report({ name: 'contacts: consent gate', status: 'fail', detail: `HTTP ${noConsent.status}` })
+    }
+  } catch (err) {
+    report({ name: 'voice contacts lifecycle', status: 'fail', detail: String(err) })
+  } finally {
+    if (contactId) {
+      const del = await fetch(`${BASE}/api/voice-contacts/${contactId}`, { method: 'DELETE', headers: headers() })
+      report({ name: 'contacts: delete removes profile + audio', status: del.ok ? 'pass' : 'fail' })
+    }
+  }
+
+  // ── 9. Speaker registry persistence (stable ids across restarts) ─────────
+  try {
+    const conv = await fetch(`${BASE}/api/conversations`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ title: `SPK ${Date.now()}` }),
+    })
+    capture(conv)
+    const convData = await conv.json()
+    const spkThreadId = convData?.conversation?.id
+    if (!spkThreadId) throw new Error('no thread')
+    const put = await fetch(`${BASE}/api/conversations/${spkThreadId}/speakers`, {
+      method: 'PUT',
+      headers: headers(),
+      body: JSON.stringify({
+        speakers: [
+          { clusterKey: 'spk_001', contactId: null, displayName: 'Unknown 1' },
+          { clusterKey: 'spk_002', contactId: contactId, displayName: 'IT Renamed Speaker' },
+        ],
+      }),
+    })
+    capture(put)
+    if (!put.ok) throw new Error(`PUT ${put.status}`)
+    const get = await fetch(`${BASE}/api/conversations/${spkThreadId}`, { headers: headers() })
+    const gdata = await get.json()
+    const speakers = gdata?.speakers ?? []
+    const ok = speakers.length === 2 && speakers[0]?.clusterKey === 'spk_001' && speakers[1]?.displayName === 'IT Renamed Speaker'
+    report({ name: 'speaker registry: PUT → GET stable ids persist', status: ok ? 'pass' : 'fail', detail: `${speakers.length} clusters` })
+
+    // message with speaker fields (v2 §28)
+    const m2 = await fetch(`${BASE}/api/messages`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        conversationId: spkThreadId,
+        speakerRole: 'other',
+        source: 'بله، من آماده‌ام',
+        translated: 'Yes, I am ready.',
+        sourceLang: 'fa',
+        targetLang: 'en',
+        speakerKey: 'spk_001',
+        speakerName: 'Unknown 1',
+        identificationStatus: 'unknown',
+      }),
+    })
+    capture(m2)
+    if (!m2.ok) throw new Error(`messages POST ${m2.status}`)
+    const detail = await fetch(`${BASE}/api/conversations/${spkThreadId}`, { headers: headers() })
+    const ddata = await detail.json()
+    const last = ddata?.messages?.[ddata.messages.length - 1]
+    const speakerOk = last?.speakerKey === 'spk_001' && last?.speakerName === 'Unknown 1' && last?.identificationStatus === 'unknown'
+    report({ name: 'messages: speaker attribution persisted (§28)', status: speakerOk ? 'pass' : 'fail', detail: `speakerName=${last?.speakerName}` })
+
+    await fetch(`${BASE}/api/conversations/${spkThreadId}`, { method: 'DELETE', headers: headers() }).catch(() => {})
+  } catch (err) {
+    report({ name: 'speaker registry persistence', status: 'fail', detail: String(err) })
+  }
+
+  // ── 10. Custom providers: masked keys, real test, failover honesty ───────
+  let providerId: string | null = null
+  try {
+    const create = await fetch(`${BASE}/api/providers`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        category: 'translate',
+        name: 'IT Bogus LLM',
+        baseUrl: 'https://bogus.invalid/v1',
+        apiKey: 'sk-test-1234567890abcd',
+        model: 'test-model',
+      }),
+    })
+    capture(create)
+    const cdata = await create.json()
+    if (!create.ok) throw new Error(cdata?.error ?? `HTTP ${create.status}`)
+    providerId = cdata.provider.id
+    const masked = !('apiKey' in cdata.provider) && !('encKey' in cdata.provider) && cdata.provider.hasKey === true && cdata.provider.keyHint === 'abcd'
+    if (!masked) throw new Error(`key leaked: ${JSON.stringify(cdata.provider).slice(0, 120)}`)
+    report({ name: 'providers: key stored encrypted + masked (never returned)', status: 'pass', detail: `hint …${cdata.provider.keyHint}` })
+
+    // REAL test against a bogus endpoint → honest failure with a code
+    const test = await fetch(`${BASE}/api/providers?action=test&id=${providerId}`, { method: 'POST', headers: headers() })
+    const tdata = await test.json()
+    if (test.ok && tdata.ok === false && tdata.code && tdata.ms >= 0) {
+      report({ name: 'providers: REAL connection test fails honestly', status: 'pass', detail: `code=${tdata.code} ms=${tdata.ms}` })
+    } else {
+      report({ name: 'providers: real test', status: 'fail', detail: JSON.stringify(tdata).slice(0, 120) })
+    }
+  } catch (err) {
+    report({ name: 'custom providers', status: 'fail', detail: String(err) })
+  } finally {
+    if (providerId) {
+      const del = await fetch(`${BASE}/api/providers?id=${providerId}`, { method: 'DELETE', headers: headers() })
+      report({ name: 'providers: cleanup (delete)', status: del.ok ? 'pass' : 'fail' })
+    }
+  }
+
   finish()
 }
 
@@ -309,6 +514,34 @@ function socketTextProbe(
       })
       .catch(reject)
   })
+}
+
+/** Build a REAL 16-bit PCM WAV (synthetic voice) for contact enrollment tests. */
+function makeTestWav(sampleRate: number, seconds: number, f0: number, brightness: number): Buffer {
+  const n = Math.floor(sampleRate * seconds)
+  const pcm = Buffer.alloc(n * 2)
+  for (let i = 0; i < n; i++) {
+    const t = i / sampleRate
+    const phase = 2 * Math.PI * f0 * (1 + 0.02 * Math.sin(2 * Math.PI * 2.1 * t)) * t
+    const env = 0.6 + 0.4 * Math.sin(2 * Math.PI * 2.7 * t)
+    const v = env * (Math.sin(phase) + 0.45 * Math.sin(2 * phase) + brightness * (0.25 * Math.sin(5 * phase) + 0.12 * Math.sin(8 * phase)))
+    pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, v * 0.4)) * 32767), i * 2)
+  }
+  const header = Buffer.alloc(44)
+  header.write('RIFF', 0, 'ascii')
+  header.writeUInt32LE(36 + pcm.length, 4)
+  header.write('WAVE', 8, 'ascii')
+  header.write('fmt ', 12, 'ascii')
+  header.writeUInt32LE(16, 16)
+  header.writeUInt16LE(1, 20)
+  header.writeUInt16LE(1, 22)
+  header.writeUInt32LE(sampleRate, 24)
+  header.writeUInt32LE(sampleRate * 2, 28)
+  header.writeUInt16LE(2, 32)
+  header.writeUInt16LE(16, 34)
+  header.write('data', 36, 'ascii')
+  header.writeUInt32LE(pcm.length, 40)
+  return Buffer.concat([header, pcm])
 }
 
 /** Grab the anonymous vox_uid cookie by making one warmup request. */

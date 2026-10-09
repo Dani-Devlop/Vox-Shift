@@ -247,3 +247,9 @@ export class LLMTranslationEngine implements TranslationEngine {
     return parsed
   }
 }
+
+// ── Exports for the multi-provider router (master prompt v2 §22) ────────────
+// User-registered OpenAI-compatible LLM endpoints run the EXACT same
+// translation + auto-detect prompts as the built-in GLM engine, so switching
+// providers never changes translation behavior — only who serves it.
+export { buildSystemPrompt, buildUserPrompt, buildAutoSystemPrompt, parseAutoReply }

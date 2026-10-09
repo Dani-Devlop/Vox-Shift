@@ -1,5 +1,6 @@
 import { getZAI } from './asr'
 import { resampleWav } from './audio-utils'
+import { openAICompatibleTTS, routedCall } from '../providers/router'
 import { ElevenLabsCloneEngine, cloneProviderConfigured } from './voice-clone'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,13 +109,19 @@ export interface IdentitySynthesisOptions {
 /**
  * Router that dispatches synthesis to the right engine based on the profile's
  * declared mode. Cloned profiles go to the real cloning provider — always.
+ * Preset/default voices go through the multi-provider TTS chain first
+ * (user-registered OpenAI-compatible endpoints) with the built-in z-ai
+ * engine as the honest final fallback. Every result records WHO served it.
  */
-export class VoiceIdentityEngine implements VoiceEngine {
+export class VoiceIdentityEngine {
   readonly id = 'voice-identity'
   private cloneEngine = new ElevenLabsCloneEngine()
   private matchEngine = new ZaiVoiceEngine()
 
-  async synthesize(text: string, opts: IdentitySynthesisOptions): Promise<Buffer> {
+  async synthesize(
+    text: string,
+    opts: IdentitySynthesisOptions
+  ): Promise<{ buffer: Buffer; format: 'wav' | 'mp3'; providerId: string }> {
     if (opts.profileMode === 'clone') {
       if (!opts.providerProfileId) {
         throw new Error(
@@ -126,7 +133,7 @@ export class VoiceIdentityEngine implements VoiceEngine {
           'Voice cloning provider is not configured (ELEVENLABS_API_KEY missing) — your cloned profile was NOT used and the default voice was deliberately NOT substituted. Add the key to /home/z/my-project/.env and restart both services, or switch to a Voice Match profile.'
         )
       }
-      return this.cloneEngine.synthesize(text, {
+      const buffer = await this.cloneEngine.synthesize(text, {
         providerProfileId: opts.providerProfileId,
         speed: opts.speed,
         providerModel: opts.providerModel,
@@ -134,12 +141,24 @@ export class VoiceIdentityEngine implements VoiceEngine {
         similarityBoost: opts.providerSimilarity,
         styleExaggeration: opts.providerStyle,
       })
+      return { buffer, format: 'wav', providerId: 'elevenlabs-ivc' }
     }
-    // 'voice-match' (and any legacy payload without a mode) → pitch-conformed preset.
-    return this.matchEngine.synthesize(text, {
-      voice: opts.voice,
-      speed: opts.speed,
-      pitchRatio: opts.pitchRatio,
+    // 'voice-match' (and any legacy payload without a mode) → multi-provider
+    // preset chain, then pitch-conformed built-in (honest final fallback).
+    const routed = await routedCall<{ buffer: Buffer; format: 'wav' | 'mp3'; conformed: boolean }>('tts', {
+      user: async (p) => {
+        const { bytes, format } = await openAICompatibleTTS(p, text, opts.speed)
+        return { buffer: bytes, format, conformed: false }
+      },
+      builtin: async () => {
+        const buffer = await this.matchEngine.synthesize(text, {
+          voice: opts.voice,
+          speed: opts.speed,
+          pitchRatio: opts.pitchRatio,
+        })
+        return { buffer, format: 'wav' as const, conformed: true }
+      },
     })
+    return { buffer: routed.value.buffer, format: routed.value.format, providerId: routed.providerId }
   }
 }

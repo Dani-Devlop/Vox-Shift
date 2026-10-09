@@ -4,14 +4,21 @@ import { motion } from 'framer-motion'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Check, Copy, History, List, MessagesSquare, RotateCcw, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { SpeakerChip } from '@/components/translator/speaker-chip'
 import { cn } from '@/lib/utils'
 import type { TranscriptEntry } from '@/hooks/use-translator'
+import type { SpeakerInfo } from '@/types/translator'
 import { LANG_META } from '@/types/translator'
 
 interface TranscriptListProps {
   entries: TranscriptEntry[]
   onClear: () => void
   onReplay: (utteranceId: string) => void
+  /** Session speaker map — names resolve here so identifying renames history. */
+  speakers?: Record<string, SpeakerInfo>
+  onStartIdentify?: (clusterKey: string) => void
+  onConfirmCandidate?: (clusterKey: string, contactId: string, name: string) => void
+  onKeepUnknown?: (clusterKey: string) => void
 }
 
 type TranscriptView = 'list' | 'dialogue'
@@ -58,7 +65,15 @@ function TimeChip({ iso }: { iso: number }) {
   )
 }
 
-export function TranscriptList({ entries, onClear, onReplay }: TranscriptListProps) {
+export function TranscriptList({
+  entries,
+  onClear,
+  onReplay,
+  speakers,
+  onStartIdentify,
+  onConfirmCandidate,
+  onKeepUnknown,
+}: TranscriptListProps) {
   const [view, setView] = useState<TranscriptView>('list')
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
@@ -180,25 +195,21 @@ export function TranscriptList({ entries, onClear, onReplay }: TranscriptListPro
                   transition={{ type: 'spring', stiffness: 380, damping: 28, delay: idx === chronological.length - 1 ? 0.04 : 0 }}
                   className="space-y-1.5"
                 >
-                  {/* Pair header — flags + clock */}
-                  <div className="flex items-center gap-1.5 pl-1">
+                  {/* Pair header — flags + speaker + clock */}
+                  <div className="flex flex-wrap items-center gap-1.5 pl-1">
                     <span className="inline-flex items-center gap-1 font-mono text-[9px] font-bold uppercase tracking-wider text-zinc-500">
                       <span aria-hidden>{srcMeta?.flag ?? '·'}</span>
                       <span className="text-zinc-700">→</span>
                       <span aria-hidden>{tgtMeta?.flag ?? '·'}</span>
                     </span>
-                    {(entry.speakerRole === 'A' || entry.speakerRole === 'B') && (
-                      <span
-                        className={cn(
-                          'rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase',
-                          entry.speakerRole === 'B'
-                            ? 'border-teal-800/60 bg-teal-950/40 text-teal-300'
-                            : 'border-zinc-800 bg-zinc-900 text-zinc-500'
-                        )}
-                      >
-                        {entry.speakerRole === 'B' ? 'Speaker B' : 'Speaker A'}
-                      </span>
-                    )}
+                    <SpeakerChip
+                      info={entry.speakerKey ? speakers?.[entry.speakerKey] : undefined}
+                      fallback={entry.speakerRole === 'B' ? 'Speaker B' : 'Speaker A'}
+                      onStartIdentify={onStartIdentify}
+                      onConfirmCandidate={onConfirmCandidate}
+                      onKeepUnknown={onKeepUnknown}
+                      compact
+                    />
                     {entry.voiceMode === 'clone' && (
                       <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-400" title="Spoken with your real cloned voice">
                         clone
@@ -262,7 +273,17 @@ export function TranscriptList({ entries, onClear, onReplay }: TranscriptListPro
                   const tgtRtl = entry.targetLang === 'fa'
                   return (
                     <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex min-w-0 flex-1 flex-col gap-1">
+                        {(entry.speakerKey ? speakers?.[entry.speakerKey] : undefined) && (
+                          <SpeakerChip
+                            info={speakers![entry.speakerKey!]}
+                            fallback={entry.speakerRole === 'B' ? 'Speaker B' : 'Speaker A'}
+                            onStartIdentify={onStartIdentify}
+                            onConfirmCandidate={onConfirmCandidate}
+                            onKeepUnknown={onKeepUnknown}
+                            compact
+                          />
+                        )}
                         {entry.source && (
                           <p
                             dir={srcRtl ? 'rtl' : 'ltr'}

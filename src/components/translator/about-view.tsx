@@ -41,13 +41,14 @@ const STAGE_LABELS: Record<string, string> = {
   translation: 'Translation (LLM)',
   voice: 'Voice synthesis (TTS)',
   cloneProvider: 'Voice cloning provider',
+  speakerEngine: 'Speaker recognition engine (local)',
   database: 'Database (write → read → delete)',
   transport: 'Realtime transport (translator service)',
 }
 
-const STAGE_ORDER = ['speech', 'translation', 'voice', 'cloneProvider', 'database', 'transport']
+const STAGE_ORDER = ['speech', 'translation', 'voice', 'cloneProvider', 'speakerEngine', 'database', 'transport']
 
-const VERSION_LABEL = 'v1.2.0'
+const VERSION_LABEL = 'v2.2.0'
 
 export function AboutView({ connected, speaker }: { connected?: boolean; speaker?: SpeakerRole }) {
   const [diag, setDiag] = useState<DiagnosticsData | null>(null)
@@ -310,10 +311,11 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
             pitch-conformed preset match — always labeled honestly, never presented as a clone.
           </li>
           <li>
-            <span className="font-semibold text-zinc-300">No speaker diarization.</span> The ASR
-            engine cannot identify who is speaking. Two-person conversations use the manual
-            Speaker A/B button (B is spoken with a distinct default voice); with Auto-detect on,
-            each turn is translated in the correct direction automatically.
+            <span className="font-semibold text-zinc-300">Speaker recognition is local DSP — not a neural model.</span>{' '}
+            Voiceprints (pitch register + spectral timbre) are computed on this machine and matched by cosine
+            similarity. Different people are reliably separated; near-identical voices, heavy noise, or a shared
+            microphone can stay honestly <span className="font-mono text-amber-400">Unknown N</span> — the system
+            never guesses a name (Unknown is better than wrong). Ambiguous matches ask you to confirm.
           </li>
           <li>
             <span className="font-semibold text-zinc-300">β languages.</span> Persian output and all

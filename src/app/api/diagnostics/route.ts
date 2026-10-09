@@ -3,6 +3,7 @@ import ZAI from 'z-ai-web-dev-sdk'
 import { db } from '@/lib/db'
 import { randomUUID } from 'crypto'
 import { cloneConfigured, cloneSetupInstructions, CLONE_ENGINE_ID } from '@/lib/voice/clone-provider'
+import { computeVoiceprint, cosineSimilarity } from '@/lib/speaker/voiceprint'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -24,7 +25,7 @@ export const maxDuration = 60
 // demo successes, no secrets ever returned.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const APP_VERSION = '1.2.0'
+const APP_VERSION = '2.2.0'
 /**
  * Transport probe target — the translator mini-service directly. The probe
  * performs a REAL engine.io v4 polling handshake (the same first request a
@@ -90,6 +91,12 @@ export async function GET() {
         configured: cloneConfigured(),
         mode: 'real cross-language voice cloning (instant) → your own voice in the translation',
         setup: cloneConfigured() ? null : cloneSetupInstructions(),
+      },
+      // v2: LOCAL speaker recognition (master prompt — no vendor, no cloud).
+      speakerRecognition: {
+        engine: 'local-dsp-voiceprint',
+        configured: true, // computed locally — always available
+        mode: 'pitch + spectral-timbre voiceprint, cosine matching, local-first',
       },
     },
     database: { ok: dbOk, engine: 'sqlite (prisma)' },
@@ -274,7 +281,53 @@ export async function POST() {
     }
   }
 
-  // ── Stage 6 — Realtime transport: REAL socket.io engine handshake ────────
+  // ── Stage 6 — Speaker recognition engine: REAL local computation ─────────
+  // Generate two different synthetic voices, compute their voiceprints, and
+  // verify: self-similarity ≈ 1 AND cross-voice separation. No fake pass.
+  const tSpk = Date.now()
+  try {
+    const synth = (f0: number, brightness: number): Int16Array => {
+      const sr = 16000
+      const n = sr * 3
+      const out = new Int16Array(n)
+      for (let i = 0; i < n; i++) {
+        const t = i / sr
+        const phase = 2 * Math.PI * f0 * (1 + 0.02 * Math.sin(2 * Math.PI * 2.1 * t)) * t
+        const env = 0.6 + 0.4 * Math.sin(2 * Math.PI * 2.7 * t)
+        const v =
+          env *
+          (Math.sin(phase) + 0.45 * Math.sin(2 * phase) + brightness * (0.25 * Math.sin(5 * phase) + 0.12 * Math.sin(8 * phase)))
+        out[i] = Math.round(Math.max(-1, Math.min(1, v * 0.4)) * 32767)
+      }
+      return out
+    }
+    const vpA1 = computeVoiceprint(synth(120, 0.2), 16000)
+    const vpA2 = computeVoiceprint(synth(120, 0.2), 16000)
+    const vpB = computeVoiceprint(synth(230, 0.7), 16000)
+    if (!vpA1 || !vpA2 || !vpB) throw new Error('voiceprint extraction returned null for a valid test signal')
+    const selfSim = cosineSimilarity(vpA1.vector, vpA2.vector)
+    const crossSim = cosineSimilarity(vpA1.vector, vpB.vector)
+    const ok = selfSim > 0.95 && selfSim - crossSim > 0.08
+    const contacts = await db.voiceContact.count()
+    stages.speakerEngine = {
+      status: ok ? 'pass' : 'fail',
+      ms: Date.now() - tSpk,
+      code: ok ? undefined : 'EMPTY_RESULT',
+      message: ok
+        ? undefined
+        : `Voiceprint separation is too weak (self ${selfSim.toFixed(3)}, cross ${crossSim.toFixed(3)}) — recognition quality cannot be guaranteed.`,
+      detail: { selfSimilarity: Number(selfSim.toFixed(3)), crossVoiceSimilarity: Number(crossSim.toFixed(3)), enrolledContacts: contacts, vectorDim: 57 },
+    }
+  } catch (err) {
+    stages.speakerEngine = {
+      status: 'fail',
+      ms: Date.now() - tSpk,
+      code: 'PROVIDER_ERROR',
+      message: `Local speaker engine failed: ${errorMessage(err)}`,
+    }
+  }
+
+  // ── Stage 7 — Realtime transport: REAL socket.io engine handshake ────────
   // The service's socket.io owns path '/', so the honest probe is an actual
   // engine.io polling handshake (the same one a browser performs on connect).
   const tTr = Date.now()

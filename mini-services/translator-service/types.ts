@@ -50,13 +50,45 @@ export interface StageEvent {
   ms?: number
 }
 
+// ── Speaker recognition (master prompt v2) ──────────────────────────────────
+
+export type IdentificationStatus = 'verified' | 'possible' | 'unknown' | 'context'
+
+export interface SpeakerCandidate {
+  contactId: string
+  name: string
+  /** Measured cosine similarity 0..1. */
+  score: number
+}
+
+/** Speaker block attached to results — identity is NEVER guessed (spec §13). */
+export interface SpeakerInfo {
+  /** Stable temporary id within the conversation, e.g. 'spk_001'. */
+  clusterKey: string
+  contactId?: string
+  /** Contact name, user correction, or "Unknown N". */
+  name?: string
+  status: IdentificationStatus
+  confidence?: number
+  /** Two contacts too close to call (§14) — user must confirm. */
+  candidates?: SpeakerCandidate[]
+}
+
+/** Actual providers used per stage (§23 "Record the actual provider used"). */
+export interface UsedProviders {
+  asr: string
+  translate: string
+  tts: string
+}
+
 export interface UtteranceResult {
   utteranceId: string
   sourceText: string
   translatedText: string
   /** Base64 WAV (24kHz) synthesized speech, empty if nothing to speak */
   audioBase64: string
-  audioFormat: 'wav'
+  /** 'mp3' when a custom provider returned non-WAV audio (player decodes both). */
+  audioFormat: 'wav' | 'mp3'
   voice: string
   /** How the audio was produced: provider-cloned voice, pitch-conformed
    *  preset, or the pipeline default. The UI must label this honestly. */
@@ -70,6 +102,12 @@ export interface UtteranceResult {
   detectedLang?: string
   /** Echoed speaker turn label ('A' default). */
   speakerRole?: 'A' | 'B'
+  /** Speaker recognition result (contacts / unknowns, spec v2 §12/§13). */
+  speaker?: SpeakerInfo
+  /** Actual providers used per stage (diagnostics §31). */
+  providers?: UsedProviders
+  /** Millis spent computing the voiceprint (honest stage timing). */
+  speakerMs?: number
   timings: {
     asrMs: number
     translateMs: number
@@ -127,6 +165,8 @@ export interface TranslationEvent {
   targetLang: string
   voice: string
   speakerRole?: 'A' | 'B'
+  /** Speaker recognition result — early text keeps the identity attached. */
+  speaker?: SpeakerInfo
 }
 
 /**
