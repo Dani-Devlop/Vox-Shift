@@ -63,3 +63,7 @@ download/
 !mini-services/translator-service/engines/local-asr.ts
 !mini-services/translator-service/engines/local-tts.ts
 !mini-services/translator-service/providers/local-runtimes.ts
+
+# local ASR/TTS model weights — artifacts, never tracked (GH-PUSH-3 lesson)
+vosk-model-*
+models/

@@ -99,7 +99,7 @@ function pythonHas(module: string): Promise<boolean> {
   })
 }
 
-async function ollamaModels(url: string): Promise<string[] | null> {
+async function probeOllamaModels(url: string): Promise<string[] | null> {
   try {
     const ctl = new AbortController()
     const t = setTimeout(() => ctl.abort(), 1500)
@@ -137,7 +137,7 @@ export async function detectLocalRuntimes(): Promise<DetectedLocalRuntimes> {
 
   // ── Ollama (LLM + translation) — HTTP probe ──────────────────────────────
   const ollamaUrl = OLLAMA_BASE
-  const models = await ollamaModels(ollamaUrl)
+  const models = await probeOllamaModels(ollamaUrl)
   let ollamaBaseUrl: string | null = null
   let ollamaModels: string[] = []
   if (models && models.length) {
