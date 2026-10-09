@@ -829,3 +829,24 @@ Stage Summary:
 - Pages redeploy in progress → live demo will refresh to the recovered v3.1 UI (static shell only, backend stays local by design).
 - Security recommendations to user: revoke this classic PAT after use (it was shared in chat and has repo-wide scope); prefer fine-grained token limited to Vox-Shift with Contents:RW.
 - Next: restart local dev server on recovered tree (v1.0-era process still serving stale code/db), bun lint, verify / route renders.
+
+---
+Task ID: GH-PUSH-5 (runtime reconstruction)
+Agent: main (Z.ai Code)
+Task: Reconstruct the local-* runtime modules that were NEVER git-tracked (lost with the rollback) and re-provision the local stack
+
+Work Log:
+- Root cause of the extra loss: .gitignore's `local-*` rule excluded the v3.0 LOCAL runtime SOURCES (engines/local-asr.ts, engines/local-tts.ts, providers/local-runtimes.ts) from every commit AND from the platform's git-aware snapshot → present in NO copy.
+- Spec source: worklog line "LOCAL runtimes that REALLY execute" + T7/T8 expected provider ids (local:vosk-asr / local:ollama-llm / local:espeak-tts) + pipeline/router usage sites (localASR(wavBase64,lang)→{text}; localTTS(text,{lang,speed})→{buffer}; detectLocalRuntimes()→{runtimes[], ollamaBaseUrl, ollamaModels}; invalidateLocalRuntimeCache(); 30 s cache; pickOllamaModel env→qwen→llama/mistral/gemma→first).
+- Wrote all three modules (558 lines): real probes only (vosk python import + language-tagged model dirs, espeak-ng/piper/whisper.cpp on PATH, Ollama HTTP /api/tags 1.5 s timeout), honest NOT_CONFIGURED details surfaced in the providers UI, graceful absence handling.
+- Fixed a TDZ bug (function probeOllamaModels vs variable ollamaModels name collision) caught by the smoke test.
+- .gitignore: scoped negations (!mini-services/translator-service/{engines,providers}/local-*.ts) so these sources are tracked forever — committed + pushed as f8e24b6.
+- Re-provisioned the local stack after the rollback wiped it: pip vosk into the sandbox venv; vosk-model-small-fa-0.42 (97M) + vosk-model-small-en-us-0.15 (68M) re-downloaded to /home/z/models (espeak-ng survived at /usr/bin).
+- REAL SMOKE TEST PASSED (bun /tmp/smoke-local.ts): detection = vosk✓(fa model) espeak✓ ollama✗(honest); localTTS espeak fa → 175 KB WAV @35 ms; localASR vosk fa → "سلام حالت چطوره امروز الو به" @1.6 s (tail words = known espeak robotic artifacts, documented limitation).
+- Services: next dev :3000 (GET / → 200, /api/providers → categories incl. v3.1 'llm') and translator-service :3003 boot clean on the reconstructed modules.
+- Still absent after rollback (honest): Ollama binary + models (defer to next round — T8/T9 legs), piper voices, whisper.cpp.
+
+Stage Summary:
+- GitHub main = f8e24b6 (v2.2.0 clean → v3.1.0 recovered → worklog → runtime reconstruction); Pages workflow redeploying on every push.
+- Local runtime path REAL again end-to-end (espeak→vosk proven); ollama reinstall queued (VOXSHIFT_OLLAMA_MODEL=qwen2.5:3b-instruct target per §V31).
+- Lesson encoded in .gitignore: runtime SOURCES must never match ignore rules — only artifacts (models/, audio cache) stay untracked.
