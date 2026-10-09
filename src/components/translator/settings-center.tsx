@@ -369,7 +369,7 @@ export function SettingsCenter(p: SettingsCenterProps) {
               the numeric profile (pitch, brightness, tempo) is kept.
               {p.profile?.mode === 'clone' && (
                 <>
-                  {' '}Cloned profiles differ: your sample is stored by ElevenLabs to power the clone, and deleting the
+                  {' '}Cloned profiles differ by engine: a LOCAL OpenVoice profile keeps your sample and tone-color embedding on this machine only (delete here erases both); an ElevenLabs profile stores your sample with ElevenLabs to power the cloud clone, and deleting the
                   profile deletes it there too.
                 </>
               )}
@@ -431,7 +431,7 @@ export function SettingsCenter(p: SettingsCenterProps) {
               configured={providerStatus.providers?.voice?.configured}
             />
             <ProviderChip
-              label="Voice cloning (ElevenLabs)"
+              label="Voice cloning (local OpenVoice / ElevenLabs)"
               engine={providerStatus.providers?.voiceClone?.engine}
               configured={providerStatus.providers?.voiceClone?.configured}
             />

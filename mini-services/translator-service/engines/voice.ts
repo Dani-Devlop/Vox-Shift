@@ -125,6 +125,40 @@ export class VoiceIdentityEngine {
     opts: IdentitySynthesisOptions
   ): Promise<{ buffer: Buffer; format: 'wav' | 'mp3'; providerId: string }> {
     if (opts.profileMode === 'clone') {
+      // ── LOCAL clone (v3.3.1, Architecture C): base TTS → OpenVoice tone-color
+      // conversion toward the enrolled speaker. Selected via providerModel
+      // 'local-openvoice'; measured on CPU in voxshift-ml/bench.
+      if (opts.providerModel === 'local-openvoice') {
+        if (!opts.providerProfileId) {
+          throw new Error(
+            'Local-clone profile has no speaker id (local enrollment incomplete). Re-enroll the sample — no fallback voice was used.'
+          )
+        }
+        const { localCloneConvert } = await import('../../../src/lib/voice/local-clone')
+        // base synthesis reuses the routed LOCAL branch (piper → espeak) so the
+        // base acoustics match the target language; conversion adds the timbre.
+        const base = await routedCall<{ buffer: Buffer; format: 'wav' | 'mp3'; conformed: boolean }>('tts', {
+          local: async () => {
+            const { localTTS } = await import('./local-tts')
+            const out = await localTTS(text, { lang: opts.lang ?? 'en', speed: opts.speed })
+            return { buffer: out.buffer, format: 'wav' as const, conformed: false }
+          },
+          user: async (p) => {
+            const { bytes, format } = await openAICompatibleTTS(p, text, opts.speed)
+            return { buffer: bytes, format, conformed: false }
+          },
+          builtin: async () => {
+            const buffer = await this.matchEngine.synthesize(text, {
+              voice: opts.voice,
+              speed: opts.speed,
+            })
+            return { buffer, format: 'wav' as const, conformed: true }
+          },
+        })
+        const converted = await localCloneConvert(opts.providerProfileId, base.value.buffer)
+        return { buffer: converted, format: 'wav', providerId: 'local-openvoice' }
+      }
+      // ── CLOUD clone (ElevenLabs IVC) — unchanged behavior:
       if (!opts.providerProfileId) {
         throw new Error(
           'This voice profile has no provider voice id (enrollment incomplete). Re-enroll the sample or switch profiles — no fallback voice was used.'

@@ -1,0 +1,8 @@
+{
+  "control_jam_vs_jam2(same)": 0.4491,
+  "control_jam_vs_kazi(diff-studio)": 0.4165,
+  "B1_piper_raw vs jam": 0.0253,
+  "B2J_piper_to_jam vs jam": 0.5375,
+  "B2J_piper_to_jam vs kazi": 0.4306,
+  "kazi_out vs jam": 0.4165
+}

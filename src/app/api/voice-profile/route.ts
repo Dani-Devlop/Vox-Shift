@@ -363,7 +363,7 @@ function capabilities() {
     mode: configured ? ('clone' as const) : ('voice-match' as const),
     note: configured
       ? 'Real voice cloning is active: your sample is enrolled with ElevenLabs Instant Voice Cloning and the generated English audio is synthesized from YOUR enrolled voice (cross-language, Persian reference → English speech).'
-      : 'Your sample is analyzed for pitch, brightness and tempo. The closest studio voice is chosen, its pitch is shifted toward your register, and its tempo is matched — your sample genuinely shapes the output. This is an estimated match, NOT a vocal clone.',
+      : 'Your sample is analyzed for pitch, brightness and tempo. The closest studio voice is chosen, its pitch is shifted toward your register, and its tempo is matched — your sample genuinely shapes the output. This is an estimated match, NOT a vocal clone. For an ON-BOX local clone (OpenVoice v2 tone-color conversion, no third-party upload), POST the sample to /api/voice-profile/clone.',
     setup: configured ? null : cloneSetupInstructions(),
   }
 }
