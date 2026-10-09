@@ -572,3 +572,35 @@ Stage Summary:
 - ACCEPTANCE MET: code published to github.com/Dani-Devlop/Vox-Shift (clean history, MIT license kept, no secrets/private data), GitHub Pages live static demo at https://dani-devlop.github.io/Vox-Shift/ with auto-redeploy on every push to main.
 - Known limitations (honest): Pages serves UI only — ASR/translation/voice engine + profiles need the local backend (banner explains this in-app). The first PAT (repo-only) should be revoked/rotated since it was shared in chat; the second token also was shared — recommend rotation and, if possible, fine-grained tokens.
 - Next priorities: 1) rotate GitHub tokens; 2) when a real ELEVENLABS_API_KEY is configured locally, re-run e2e-probe + live clone audition (blocked earlier by z-ai 429 window); 3) optionally auto-refresh gh-pages in the periodic review if Pages ever drifts; 4) consider Actions badge in README.
+
+---
+Task ID: V12-1
+Agent: main (Z.ai Code)
+Task: VoxShift v1.2 — Fix Core Functionality, Voice Identity & Interpreter Mode (production readiness)
+
+Work Log:
+- Full codebase map via Explore agent (hook surface, service pipeline, APIs, components, schema, probes).
+- INTERPRETER ENGINE (real, both directions):
+  · AUTO direction: sourceLang/targetLang 'auto' + autoPair ('fa,<other>') — ONE LLM call does DETECTED/TRANSLATION parsing (engines/translator.ts translateAuto + parseAutoPair); server picks the target as the OTHER pair member → true bidirectional fa↔X conversation (verified code path; live check blocked by z-ai 429).
+  · Manual Speaker A/B (live-panel): B speaks the opposite side with distinct default voice (jam) + no profile; speakerRole plumbed types→server→pipeline→result→transcript chips→thread messages (A→'user', B→'other').
+  · Honest no-diarization note in UI + About; per-turn records already rich (text/translation/timings/langs/voice) — kept.
+- VOICE IDENTITY: multi-take (≤3) enrollment — client keeps takesRef, server POST accepts extraSamples[] and uploads ALL to ElevenLabs (enrollCloneVoice(Buffer[])); measured ReviewQuality (dBFS/clipping %/duration + coaching); similarity_boost + style sliders (enroll + active clone profile) → providerSimilarity/providerStyle end-to-end (schema + provider settings + synth); honest elapsed-only progress during the single provider request.
+- SELF-TEST REWRITE (POST /api/diagnostics): REAL probes — TTS→ASR round-trip (skips honestly on TTS failure), LLM translate, clone /v1/user (tier+quota when configured), DB create→find→delete, engine.io v4 handshake to :3003. Stable codes (TIMEOUT/AUTH/RATE_LIMIT/NETWORK/PROVIDER_5XX/SERVICE_DOWN/DB_ERROR/NOT_CONFIGURED/EMPTY_RESULT/DEPENDENCY_FAILED). About view renders status/ms/code/message/detail + overall verdict; GET adds nothing fake; version 1.2.0 everywhere.
+- THREADS/DATA: case-insensitive search (bounded in-memory filter over ≤400 convs — SQLite lacks insensitive mode); DELETE /api/history/[id] (+ deleteAudioFile in audio-store, messages unlinked); audio route OWNERSHIP check (was missing!); retention 0/7/30/90 enforced server-side on history GET (unstarred + audio pruned); thread overrides + playbackRate/bigButton UI; settings gear on Sessions rows (opens thread).
+- SETTINGS: Providers & connection chips (live GET /api/diagnostics), API-keys card with clone setup steps, auto-detect + β-languages toggles (β languages hideable — honest TTS capability matrix in LANG_META), retention selector.
+- Hook: autoDetect/betaLangs/historyRetentionDays persisted (localStorage + preferences API), speaker state, availableOtherLangs, deleteHistoryEntry, providerSimilarity/Style passthrough. Fixed a state-before-init crash (langPair memo ordering) found by browser QA.
+- Schema: VoiceProfile + providerSimilarity/providerStyle/sampleCount (db:push OK).
+- tests/integration/run.ts (bun, REAL): gateway, self-test, threads lifecycle (create/message/speakerRole/search/reopen/overrides/delete), preferences round-trip, realtime text + AUTO probes, cloning honesty. Run: bun tests/integration/run.ts.
+- Docs: CHANGELOG 1.2.0, README env table + deploy steps, .env.example unchanged (already documents ELEVENLABS_API_KEY).
+
+Verification (actual results):
+- lint 0 errors; service syntax-check OK; db:push OK.
+- Integration suite: 9 PASS / 2 FAIL (both z-ai 429 RATE_LIMIT — external quota) / 2 honest SKIP (clone unconfigured; AUTO probe rate-limited). Threads: full lifecycle PASS incl. case-insensitive search + overrides persistence. DB + transport PASS (real handshake sessionId).
+- Self-test UI (browser via :81): SKIPPED/FAIL/PASS/UNCONFIGURED cards with codes + messages render exactly; Database PASS 8ms; Transport PASS 5ms (sessionId visible).
+- Browser QA (:81): v1.2.0 badge, Engine green, Speaker A/B radios, Auto-detect toggle dims mode/lang pickers, Providers chips (clone MISSING amber — honest), Voice view + consent + record, console clean after fixing a nested <ol> in <p>, mobile 390px NO overflow, bottom nav intact.
+- GitHub: pushed 48c1a54 → Pages Actions SUCCESS (live demo redeployed).
+
+Stage Summary:
+- ACCEPTANCE: #1 mic flow intact (regression-safe); #2 profile persists + clone path passes provider settings end-to-end (live clone audition still needs ELEVENLABS_API_KEY); #3 Interpreter both directions implemented (live 429-blocked verification of the LLM leg; prompt/format + parse verified by unit-level probes in integration run when quota clears); #4 TTS/translation verified against real provider earlier + honest 429 surfacing now; #5 threads reopen/continue PASS; #6 global vs thread settings independence PASS (snapshot/restore + suppression intact); #7 self-test real + traceable PASS; #8 mobile + integration suites run (provider stages pending quota window).
+- BLOCKER (external): z-ai 429 window persisted the whole round — self-test/LLM/TTS/ASR stages report RATE_LIMIT honestly; re-run `bun tests/integration/run.ts` + in-app self-test when quota clears.
+- Next priorities: 1) re-run provider-stage verification when the 429 window clears (cron webDevReview should do it); 2) add real ELEVENLABS_API_KEY → re-enroll → live clone audition; 3) optional: per-speaker voice profile selection (B uses profile #2), waveform scrubbing, per-thread auto-detect override.
