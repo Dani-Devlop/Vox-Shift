@@ -1,0 +1,1030 @@
+VoxShift — FINAL MASTER IMPLEMENTATION PROMPT v2
+
+ROLE
+
+You are the primary implementation agent for the existing VoxShift project.
+
+Your job is NOT to merely describe code, suggest architecture, or generate a demo.
+
+You must inspect the existing VoxShift project, modify the real codebase, implement the requested features, test them, fix problems, and update Git/GitHub when access is available.
+
+Do not rebuild the project from scratch.
+
+Preserve existing functionality and UI wherever possible, and integrate the new system into the current architecture.
+
+---
+
+1. FIRST — INSPECT THE EXISTING PROJECT
+
+Before writing or changing code:
+
+- Inspect the complete repository.
+- Identify frontend and backend architecture.
+- Identify the existing audio pipeline.
+- Identify microphone handling.
+- Identify ASR.
+- Identify speaker recognition.
+- Identify diarization.
+- Identify Voice Identity.
+- Identify Voice Contacts, if any.
+- Identify GLM/Agent integration.
+- Identify TTS and voice cloning.
+- Identify provider/API integrations.
+- Identify database/storage.
+- Identify session management.
+- Identify authentication and permissions.
+- Identify existing tests.
+- Identify Git configuration.
+- Identify environment variables.
+
+Do not assume that a feature exists because its UI exists.
+
+Verify the real implementation.
+
+If something is currently fake, simulated, disconnected, or incomplete, replace it with a real implementation.
+
+---
+
+2. CORE OBJECTIVE
+
+Transform VoxShift into a modular, local-first voice platform with:
+
+- Voice Identity
+- Voice Profiles
+- Voice Contacts
+- Real-time speaker recognition
+- Active speaker detection
+- Speaker diarization
+- Persistent speaker tracking
+- Unknown-speaker enrollment
+- Automatic speaker labeling
+- ASR
+- Translation
+- Interpreter mode
+- TTS
+- Voice cloning
+- GLM/Agent integration
+- Multi-provider routing
+- Local providers
+- Free providers
+- Paid providers
+- User-provided API providers
+- Automatic failover
+- Provider health monitoring
+- Persistent sessions
+- Git/GitHub integration
+
+The system must prioritize correct identity over guessing.
+
+---
+
+3. SPEECH PIPELINE
+
+Implement this architecture:
+
+Microphone
+   ↓
+Audio Capture
+   ↓
+Audio Cleanup / Echo Cancellation
+   ↓
+VAD
+   ↓
+Active Speaker Detection
+   ↓
+Speaker Diarization
+   ↓
+Speaker Embedding
+   ↓
+Speaker Recognition
+   ↓
+Voice Contact Matching
+   ↓
+Unknown Speaker Enrollment
+   ↓
+Persistent Speaker Tracking
+   ↓
+ASR
+   ↓
+GLM / Translation / Agent
+   ↓
+TTS / Voice Cloning
+   ↓
+Audio Output
+
+Each component must be modular and replaceable.
+
+Do not make the entire speech system dependent on GLM.
+
+---
+
+4. REAL-TIME SPEAKER RECOGNITION
+
+The system must automatically determine who is speaking.
+
+Example:
+
+Person A speaks
+Person B speaks
+Person A speaks
+Person B speaks
+
+The transcript should become:
+
+A
+B
+A
+B
+
+without requiring manual A/B/C speaker selection.
+
+Support:
+
+1 speaker
+2 speakers
+3 speakers
+5 speakers
+10 speakers
+20+ speakers
+
+subject to actual model and hardware capabilities.
+
+---
+
+5. UNKNOWN SPEAKER SYSTEM — CRITICAL
+
+This feature is mandatory.
+
+If the system hears a person and cannot confidently match the voice to an existing Voice Contact:
+
+DO NOT GUESS THE PERSON'S IDENTITY.
+
+Instead create:
+
+Unknown Speaker
+
+or:
+
+Unknown 1
+Unknown 2
+Unknown 3
+
+The same unknown speaker must retain the same temporary ID throughout the conversation.
+
+Example:
+
+Unknown 1 speaks
+Unknown 2 speaks
+Unknown 1 speaks
+Unknown 2 speaks
+
+The system must not randomly rename them.
+
+---
+
+6. UNKNOWN SPEAKER ENROLLMENT
+
+When a previously unknown speaker is detected, the UI must provide an option to identify them.
+
+Example UI:
+
+🎤 Unknown Speaker
+
+[10-second voice sample]
+
+Who is this person?
+
+[ Enter name... ]
+
+[ Save Contact ]
+
+The system should automatically capture approximately 10 seconds of usable speech from that person.
+
+Do not require the user to manually record the audio if the system already has sufficient live speech available.
+
+Prefer a clean speech segment.
+
+If 10 seconds of usable speech cannot be collected, continue collecting until enough usable audio is available, subject to configured limits.
+
+---
+
+7. VOICE SAMPLE PLAYBACK
+
+Before saving the identity, allow the user to listen to the captured voice sample.
+
+Example:
+
+Unknown Speaker
+
+▶ Play voice sample
+
+Name:
+[ Hasani              ]
+
+[ Save as Contact ]
+[ Cancel ]
+
+The user must be able to verify that the captured voice belongs to the intended person.
+
+---
+
+8. CREATE VOICE CONTACT
+
+When the user enters a name and confirms:
+
+Unknown Speaker
+        ↓
+10-second voice sample
+        ↓
+Speaker Embedding
+        ↓
+Voice Profile
+        ↓
+Voice Contact
+
+Example:
+
+Hasani
+├── contact_id
+├── voice_profile_id
+├── speaker_embedding
+├── reference_audio
+├── language
+├── confidence_threshold
+├── created_at
+└── updated_at
+
+The system must persist this contact.
+
+---
+
+9. FUTURE AUTOMATIC RECOGNITION
+
+After saving:
+
+Hasani → Voice Contact
+
+when the same person speaks in a future session:
+
+Voice
+ ↓
+Speaker Embedding
+ ↓
+Voice Contact Matching
+ ↓
+Hasani
+
+The system should automatically display:
+
+🎤 Hasani
+
+without asking the user again.
+
+Do not silently overwrite an existing contact.
+
+---
+
+10. CONTACTS UI
+
+Add a dedicated Voice Contacts UI to the existing VoxShift application.
+
+Do not create a disconnected demo page.
+
+The Contacts UI should allow the user to:
+
+- View contacts
+- Add contact
+- Rename contact
+- View voice profile
+- Play reference recording
+- Add/update voice sample
+- See recognition confidence
+- Delete contact
+- Re-enroll voice
+- Temporarily disable recognition
+- View when the profile was created/updated
+
+Example:
+
+VOICE CONTACTS
+
+┌──────────────────────────────┐
+│ 🎤 Hasani                    │
+│ Voice profile: Active        │
+│ Recognition: 94%             │
+│                              │
+│ ▶ Voice sample               │
+│ [Edit] [Re-enroll] [Delete] │
+└──────────────────────────────┘
+
+┌──────────────────────────────┐
+│ 🎤 Dany                      │
+│ Voice profile: Active        │
+│ Recognition: 91%             │
+│                              │
+│ ▶ Voice sample               │
+│ [Edit] [Re-enroll] [Delete] │
+└──────────────────────────────┘
+
+Use the existing application's design system.
+
+Do not unnecessarily redesign the entire application.
+
+---
+
+11. LIVE UNKNOWN-SPEAKER UI
+
+When an unknown speaker is detected during a conversation, show something like:
+
+🎤 Unknown 1
+
+Voice not recognized
+
+[Identify Person]
+
+When clicked:
+
+Identify Unknown 1
+
+Voice sample:
+▶ Play
+
+Name:
+[________________]
+
+[Save Contact]
+
+After saving:
+
+Unknown 1
+   ↓
+Hasani
+
+Immediately update the current transcript:
+
+[00:12] Hasani:
+سلام، خوبی؟
+
+[00:16] Dany:
+بله، مرسی.
+
+Do not wait for a new conversation.
+
+---
+
+12. TEMPORARY SPEAKER IDs
+
+Unknown speakers must have stable temporary IDs.
+
+Example:
+
+spk_001 → Hasani
+spk_002 → Unknown 1
+spk_003 → Dany
+spk_004 → Unknown 2
+
+If Unknown 1 is later identified as Ali:
+
+spk_002 → Ali
+
+All previous transcript entries for that current session should be updated accordingly.
+
+---
+
+13. SPEAKER CONFIDENCE
+
+Use confidence thresholds.
+
+Example:
+
+High confidence
+→ automatically identify
+
+Medium confidence
+→ show "Possible match"
+
+Low confidence
+→ Unknown Speaker
+
+Never automatically assign a name when the evidence is weak.
+
+Core rule:
+
+Unknown is better than wrong.
+
+---
+
+14. AMBIGUOUS SPEAKER
+
+If two contacts have similar voice similarity:
+
+Possible speaker:
+
+○ Hasani — 74%
+○ Ali — 71%
+
+[Confirm]
+[Keep Unknown]
+
+Do not silently choose one.
+
+---
+
+15. SHORT UTTERANCES
+
+Support:
+
+Yes
+No
+Okay
+بله
+نه
+باشه
+چی؟
+
+Short utterances must not automatically create a new speaker.
+
+Use surrounding session context and previous speaker state when technically appropriate.
+
+---
+
+16. SPEAKER TRACKING
+
+Use:
+
+Speaker Embedding
++
+Diarization
++
+Temporal Continuity
++
+Previous Speaker
++
+Voice Contact Match
++
+Confidence
++
+Audio Quality
+
+Use hysteresis/stability logic to prevent:
+
+Hasani → Dany → Hasani
+
+from happening because of one noisy frame.
+
+---
+
+17. VOICE CONTACT MEMORY
+
+Persist confirmed contacts across sessions.
+
+Example:
+
+Session 1
+Hasani → contact_hasani
+
+Session 2
+Same voice → contact_hasani
+
+Session 3
+Same voice → contact_hasani
+
+Permanent learning must require appropriate user confirmation.
+
+---
+
+18. USER CORRECTION
+
+Allow the user to correct:
+
+Unknown 1 → Ali
+
+or:
+
+Hasani → Dany
+
+Current-session corrections should apply immediately.
+
+Permanent Voice Profile changes require explicit confirmation.
+
+---
+
+19. VOICE IDENTITY
+
+Voice Identity must be provider-independent.
+
+A Voice Profile may contain:
+
+voice_profile_id
+speaker_embedding
+reference_audio
+language
+quality_metrics
+consent_status
+created_at
+updated_at
+
+Do not lock Voice Identity to a single API.
+
+---
+
+20. VOICE CLONING
+
+Voice cloning must use a genuine compatible cloning engine.
+
+Potential engines include:
+
+F5-TTS
+CosyVoice
+XTTS
+OpenVoice
+
+or another suitable implementation.
+
+Do not call pitch shifting, speed changes, or EQ "voice cloning."
+
+The provider architecture must allow multiple TTS/voice-cloning engines.
+
+---
+
+21. GLM / AGENT SEPARATION
+
+GLM/Agent handles:
+
+Reasoning
+Conversation
+Translation
+Context
+Natural Language
+Orchestration
+
+Speech Engine handles:
+
+Audio
+VAD
+ASR
+Diarization
+Speaker Embeddings
+Speaker Recognition
+Speaker Verification
+Speaker Tracking
+TTS
+Voice Cloning
+
+Send structured data to the Agent:
+
+{
+  "speaker_id": "spk_001",
+  "contact_id": "contact_hasani",
+  "speaker_name": "Hasani",
+  "text": "Hello everyone",
+  "language": "en",
+  "identification_status": "verified",
+  "confidence": 0.94
+}
+
+---
+
+22. MULTI-PROVIDER ROUTER
+
+Create a provider abstraction supporting:
+
+LOCAL
+FREE
+PAID
+USER_API
+
+for:
+
+ASR
+Translation
+Speaker Embeddings
+Speaker Recognition
+Diarization
+TTS
+Voice Cloning
+
+Provider selection modes:
+
+AUTO
+LOCAL_FIRST
+QUALITY_FIRST
+LOW_COST
+PRIVACY_FIRST
+CLOUD_FIRST
+MANUAL
+AUTO_FAILOVER
+
+---
+
+23. AUTOMATIC FAILOVER
+
+Example:
+
+Local
+ ↓
+Failure
+ ↓
+Free API
+ ↓
+Failure
+ ↓
+Paid API
+ ↓
+Success
+
+Real failures include:
+
+- Timeout
+- Invalid API key
+- Missing API key
+- Quota exceeded
+- Rate limit
+- Provider offline
+- Model unavailable
+- Unsupported language
+- Local resource shortage
+
+Never fake successful fallback.
+
+Record the actual provider used.
+
+---
+
+24. USER API CONFIGURATION
+
+Allow users to configure:
+
+Provider
+API Key
+Base URL
+Model
+Voice ID
+Priority
+Enabled
+
+Never expose API keys in:
+
+- frontend logs
+- transcripts
+- Agent context
+- error messages
+- analytics
+
+---
+
+25. LOCAL-FIRST PROCESSING
+
+Prefer local processing when appropriate:
+
+VAD
+ASR
+Speaker Embedding
+Speaker Recognition
+Diarization
+TTS
+Voice Cloning
+
+Detect actual hardware before selecting models.
+
+Do not assume a GPU.
+
+Optimize for the available CPU/RAM resources.
+
+---
+
+26. INTERPRETER MODE
+
+Support at minimum:
+
+Persian ↔ English
+
+Pipeline:
+
+Human Speech
+ ↓
+Active Speaker
+ ↓
+Speaker Recognition
+ ↓
+ASR
+ ↓
+Translation / GLM
+ ↓
+TTS / Voice Cloning
+ ↓
+Target Audio
+
+Keep speaker identity attached to the translated text.
+
+---
+
+27. TTS SELF-DETECTION PROTECTION
+
+VoxShift must not accidentally recognize its own generated audio as a human speaker.
+
+Implement appropriate:
+
+Echo Cancellation
+Playback Detection
+Audio Routing
+Output Reference Tracking
+VAD Coordination
+
+---
+
+28. TRANSCRIPT
+
+Each transcript event should support:
+
+speaker_id
+contact_id
+speaker_name
+start_time
+end_time
+original_text
+translated_text
+language
+identification_status
+confidence
+
+Example:
+
+[00:12] Hasani:
+سلام، جلسه رو شروع کنیم.
+
+[00:16] Dany:
+بله، من آماده‌ام.
+
+[00:19] Unknown 1:
+من هم آماده‌ام.
+
+If Unknown 1 is later identified:
+
+[00:19] Ali:
+من هم آماده‌ام.
+
+---
+
+29. REAL-TIME UI
+
+Display the current speaker:
+
+🎤 Active Speaker: Hasani
+
+or:
+
+🎤 Active Speaker: Unknown 1
+
+or:
+
+🎤 Active Speaker: Needs Confirmation
+
+The UI must update automatically.
+
+Manual A/B/C speaker selection must NOT be required during normal operation.
+
+---
+
+30. PROVIDER HEALTH
+
+Display real provider states:
+
+READY
+NOT_CONFIGURED
+API_KEY_MISSING
+INVALID_KEY
+QUOTA_EXCEEDED
+RATE_LIMITED
+OFFLINE
+MODEL_NOT_INSTALLED
+UNSUPPORTED
+ERROR
+
+Never show fake connected states.
+
+---
+
+31. DIAGNOSTICS
+
+Provide useful diagnostics:
+
+Active Provider
+Fallback Provider
+Model
+Latency
+Language
+Speaker Confidence
+Recognition State
+Diarization State
+Provider Health
+
+Never reveal secrets.
+
+---
+
+32. TESTING REQUIREMENTS
+
+Before claiming completion, test:
+
+Speaker switching
+
+A → B → A → B
+
+Multiple speakers
+
+A → B → C → A → C → B
+
+Unknown speakers
+
+Unknown 1
+Unknown 2
+Unknown 1
+
+Unknown enrollment
+
+Unknown 1
+↓
+Capture ~10 seconds
+↓
+User enters "Ali"
+↓
+Save
+↓
+Ali
+
+Future recognition
+
+Ali
+↓
+new session
+↓
+same voice
+↓
+Ali
+
+Short speech
+
+A: بله
+B: نه
+A: اوکی
+B: باشه
+
+Provider failure
+
+Force provider failure and verify real failover.
+
+TTS feedback
+
+Verify generated audio is not recognized as a human speaker.
+
+Persistence
+
+Restart application and verify approved Voice Contacts remain available.
+
+---
+
+33. SECURITY AND CONSENT
+
+Voice data is sensitive.
+
+Implement:
+
+- Explicit enrollment consent
+- Secure voice-profile storage
+- Delete controls
+- Local-first processing
+- Provider disclosure
+- Secure API keys
+- No silent permanent identity learning
+- No unnecessary cloud uploads
+- No external training without appropriate consent
+
+---
+
+34. GITHUB / REAL IMPLEMENTATION
+
+This is an implementation task.
+
+After modifying the code:
+
+1. Run tests.
+2. Fix errors.
+3. Run frontend checks.
+4. Run backend checks.
+5. Verify the audio pipeline.
+6. Verify Voice Contacts.
+7. Verify unknown-speaker enrollment.
+8. Verify speaker recognition.
+9. Verify diarization.
+10. Verify GLM integration.
+11. Verify provider routing.
+12. Verify failover.
+13. Verify persistence.
+14. Review security.
+15. Commit the changes.
+16. Push to GitHub if credentials/access are available.
+
+Suggested commit:
+
+feat: add persistent voice contacts and unknown speaker enrollment
+
+Do NOT claim GitHub was updated unless the actual push succeeds.
+
+If GitHub access is unavailable, clearly report:
+
+Implementation completed locally.
+GitHub push was not performed because repository access was unavailable.
+
+---
+
+35. FINAL IMPLEMENTATION REPORT
+
+At the end, report actual results:
+
+Implemented:
+✓ Voice Identity
+✓ Voice Contacts
+✓ Unknown Speaker Enrollment
+✓ 10-second Voice Capture
+✓ Speaker Recognition
+✓ Active Speaker Detection
+✓ Speaker Diarization
+✓ Persistent Speaker Tracking
+✓ ASR
+✓ Translation
+✓ Interpreter
+✓ TTS / Voice Cloning
+✓ GLM Integration
+✓ Provider Router
+✓ Local Provider
+✓ Free/Paid/User Providers
+✓ Automatic Failover
+✓ Diagnostics
+✓ Persistence
+✓ Contacts UI
+
+Then report:
+
+Tests Passed:
+Tests Failed:
+Known Limitations:
+Providers Configured:
+Providers Unavailable:
+Local Models:
+Git Commit:
+GitHub Push:
+
+Only mark something as successful if it was actually implemented and tested.
+
+---
+
+FINAL RULE
+
+The system must evolve from:
+
+Microphone
+↓
+GLM
+↓
+Translation
+
+into:
+
+Microphone
+↓
+Audio Processing
+↓
+VAD
+↓
+Active Speaker Detection
+↓
+Speaker Diarization
+↓
+Speaker Recognition
+↓
+Voice Identity
+↓
+Voice Contact
+↓
+Unknown Speaker Enrollment
+↓
+Persistent Speaker Tracking
+↓
+ASR
+↓
+GLM / Translation / Agent
+↓
+TTS / Voice Cloning
+↓
+Audio Output
+
+The central principle is:
+
+One persistent Voice Identity system, multiple providers, automatic speaker recognition, and no vendor lock-in.
+
+And most importantly:
+
+Never guess a speaker's identity when the confidence is insufficient. Use Unknown Speaker, capture a usable voice sample, let the user assign a name, save the confirmed Voice Contact, and recognize that person automatically in future sessions.
+
+Implement this directly in the existing VoxShift project. Preserve existing functionality. Build the required Contacts UI. Test the real system. Commit the changes. Push to GitHub when access is available. Report only verified results.

@@ -850,3 +850,23 @@ Stage Summary:
 - GitHub main = f8e24b6 (v2.2.0 clean → v3.1.0 recovered → worklog → runtime reconstruction); Pages workflow redeploying on every push.
 - Local runtime path REAL again end-to-end (espeak→vosk proven); ollama reinstall queued (VOXSHIFT_OLLAMA_MODEL=qwen2.5:3b-instruct target per §V31).
 - Lesson encoded in .gitignore: runtime SOURCES must never match ignore rules — only artifacts (models/, audio cache) stay untracked.
+
+---
+Task ID: VC-3.3.1
+Agent: main (Z.ai Code)
+Task: Master voice cloning repair — Fish Speech vs F5-TTS vs existing, measured selection + implementation
+
+Work Log:
+- Environment checks: platform rollback #2 had destroyed the Railway SSH key (/home/z/.ssh gone) → regenerated ed25519 keypair (voxshift-zai-agent-v2), Railway access BLOCKED pending user registration; SSH-dependent claims avoided. Cron agent had committed 65MB vosk binaries (d97f9fe) → reverted to aab33e9, models moved to /home/z/models, vosk-model-*/models/ gitignored.
+- Pipeline audit (VOICE_CLONING_AUDIT.md): 6 root causes verified in code — R1: 'voice-match' output IS a preset studio voice (kazi etc.) pitch-shifted ±33%; R2: zh-oriented presets make accented fa; R3: real cloning = ElevenLabs cloud-only (no key); R4: local TTS has zero identity; R5: 57-dim voiceprint used only for identification; R6: no reference audio is stored at all (no refAudioPath).
+- Research (official repos/cards): Fish Speech = FISH AUDIO RESEARCH LICENSE + S1 has 13 languages WITHOUT fa → rejected (license NEEDS LEGAL REVIEW + no fa). F5-TTS = MIT code / CC-BY-NC weights (Emilia), no fa in base. OpenVoice v2 = MIT, language-agnostic tone-color converter. Piper = native fa voice (amir).
+- Benchmark (voxshift-ml/bench, 2 vCPU, reproducible): ECAPA-TDNN harness w/ discrimination controls; synthetic-reference caveats documented. OpenVoice conversion: ECAPA toward studio reference 0.025→0.538 (> same-voice-different-sentence control 0.449), conversion RTF 0.56 (P50 3.06s/20 trials), full chain ≈0.94 RTF, RAM ~1.5GB. F5-TTS CPU: WORKS cross-lingually (fa ref→en text, ECAPA 0.741 vs 0.474 control) but RTF≈24 and 3.3GB RAM → offline-only. Fish Speech: NOT TESTED (license/resources/no-fa) — stated, not hidden.
+- Implementation (Architecture C, all PASS): mini-services/voice-clone-service (python :3010, selftest 10/10), src/lib/voice/local-clone.ts, voice.ts local-openvoice branch, /api/voice-profile/clone (consent + on-box ref + rollback-on-failure + DELETE erasure), schema refAudioPath (db:push), e2e-clone-probe E2E PASS (enroll → socket fa→en → providers.tts='local-openvoice', 210KB WAV, 5.31s), honesty copy in settings + API. Fixed: Next module boundary (moved client to src/lib), 2 service bugs (NameError, TDZ), upstream quirks documented.
+- Cleanup: bench profiles/artifacts erased (privacy); bench WAVs gitignored; boot script .zscripts/voice-clone-service.sh.
+- Deliverables: VOICE_CLONING_AUDIT.md, VOICE_MODEL_COMPARISON.md, VOICE_BENCHMARK_RESULTS.md, VOICE_CLONING_IMPLEMENTATION.md (all exist), bench harness + raw JSONs, selftest + E2E probe.
+- Commit a90d58e (22 files, +1521). Push pending: GitHub token not available this session (prior token per security guidance was chat-shared, recommend revoke).
+
+Stage Summary:
+- The generated voice now carries the enrolled speaker's tone color on-box: piper (native fa/en) → OpenVoice v2, measured RTF≈0.94 E2E on 2 vCPU, MIT-licensed, honest failures, reference never leaves the machine.
+- Human-perceived similarity: NOT evaluated (no listening panel) — stated everywhere; ECAPA numbers are relative evidence, not a "95% match" claim.
+- Open items: Railway SSH key registration (blocker), GitHub token for push, Ollama reinstall (translation leg), UI enroll button for local-clone (API ready).
