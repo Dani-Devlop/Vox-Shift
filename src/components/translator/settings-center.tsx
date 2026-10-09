@@ -9,16 +9,16 @@
 // policy), and Reset-to-defaults with confirmation.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
-  AudioWaveform, Check, Database, Languages, RotateCcw, ShieldCheck, Sparkles,
+  AudioWaveform, Check, Database, KeyRound, Languages, PlugZap, RotateCcw, ShieldCheck, Sparkles,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { OTHER_LANGS, LANG_META, type OtherLang, type StyleMode } from '@/types/translator'
+import { LANG_META, type OtherLang, type StyleMode } from '@/types/translator'
 import type { VoiceProfileData } from '@/hooks/use-translator'
 import { cn } from '@/lib/utils'
 
@@ -48,6 +48,11 @@ export interface SettingsCenterProps {
   showCaptions: boolean
   profiles: VoiceProfileData[]
   profile: VoiceProfileData | null
+  /** AUTO direction + language availability + retention (v1.2). */
+  autoDetect: boolean
+  betaLangs: boolean
+  historyRetentionDays: number
+  availableLangs: readonly OtherLang[]
   onModeChange: (m: 'dub' | 'interpreter') => void
   onOtherLangChange: (l: OtherLang) => void
   onStyleChange: (s: StyleMode) => void
@@ -60,6 +65,11 @@ export interface SettingsCenterProps {
   onAutoSaveHistoryChange: (v: boolean) => void
   onUseContextChange: (v: boolean) => void
   onShowCaptionsChange: (v: boolean) => void
+  onAutoDetectChange: (v: boolean) => void
+  onBetaLangsChange: (v: boolean) => void
+  onHistoryRetentionDaysChange: (days: number) => void
+  /** Navigate to the Info view (full self-test with real per-stage probes). */
+  onOpenSelfTest: () => void
   onSelectProfile: (id: string) => Promise<boolean>
   onClearHistory: () => Promise<void>
   historyCount: number
@@ -69,6 +79,30 @@ export function SettingsCenter(p: SettingsCenterProps) {
   const [confirmClear, setConfirmClear] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
   const [resetDone, setResetDone] = useState(false)
+
+  // Provider/connection status — REAL server report (GET /api/diagnostics:
+  // config booleans + DB check only; no secrets). Fails honestly when the
+  // backend is absent (e.g. the static GitHub Pages demo).
+  const [providerStatus, setProviderStatus] = useState<{
+    loaded: boolean
+    offline: boolean
+    providers?: Record<string, { configured?: boolean; engine?: string; setup?: { steps: string[] } | null }>
+    database?: { ok?: boolean }
+  }>({ loaded: false, offline: false })
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/diagnostics', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`HTTP ${res.status}`))))
+      .then((data) => {
+        if (!cancelled) setProviderStatus({ loaded: true, offline: false, providers: data?.providers, database: data?.database })
+      })
+      .catch(() => {
+        if (!cancelled) setProviderStatus({ loaded: true, offline: true })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const resetDefaults = () => {
     p.onModeChange('dub')
@@ -83,6 +117,8 @@ export function SettingsCenter(p: SettingsCenterProps) {
     p.onAutoSaveHistoryChange(true)
     p.onUseContextChange(true)
     p.onShowCaptionsChange(true)
+    p.onAutoDetectChange(false)
+    p.onHistoryRetentionDaysChange(0)
     setConfirmReset(false)
     setResetDone(true)
     window.setTimeout(() => setResetDone(false), 2500)
@@ -92,7 +128,15 @@ export function SettingsCenter(p: SettingsCenterProps) {
     <div className="lt-enter mx-auto flex max-w-3xl flex-col gap-6">
       {/* ── Translation (spec §6.3) ───────────────────────────────────────── */}
       <SettingsSection icon={Languages} title="Translation" hint="Applies to new sessions; threads can override locally.">
-        <div className="grid gap-4 sm:grid-cols-2">
+        {/* AUTO direction — real bidirectional conversation */}
+        <SettingToggle
+          label="Auto-detect language (two-way)"
+          hint={`Detect the spoken language per phrase and translate to the other side (${LANG_META.fa.name} ↔ ${LANG_META[p.otherLang].name}). Enables real two-person interpreter conversations.`}
+          checked={p.autoDetect}
+          onChange={p.onAutoDetectChange}
+          className="border-teal-900/50 bg-teal-950/20"
+        />
+        <div className={cn('grid gap-4 sm:grid-cols-2', p.autoDetect && 'pointer-events-none opacity-40')}>
           <div className="flex flex-col gap-1.5">
             <Label className="text-[11px] uppercase tracking-wider text-zinc-500">Direction</Label>
             <Select value={p.mode} onValueChange={(v) => p.onModeChange(v as 'dub' | 'interpreter')}>
@@ -112,9 +156,10 @@ export function SettingsCenter(p: SettingsCenterProps) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent className="border-zinc-800 bg-zinc-900">
-                {OTHER_LANGS.map((l) => (
+                {p.availableLangs.map((l) => (
                   <SelectItem key={l} value={l}>
                     {LANG_META[l].flag} {LANG_META[l].name}
+                    {LANG_META[l].tts === 'beta' && <span className="ml-1 text-[9px] font-bold text-amber-400">β</span>}
                   </SelectItem>
                 ))}
               </SelectContent>
@@ -269,6 +314,12 @@ export function SettingsCenter(p: SettingsCenterProps) {
         <SettingToggle className="mt-1" label="Compact layout" hint="Tighter spacing for small screens." checked={p.compact} onChange={p.onCompactChange} />
         <SettingToggle label="Show session transcript" hint="The running list of phrases under the translation panel." checked={p.showTranscript} onChange={p.onShowTranscriptChange} />
         <SettingToggle label="Big-button talk mode" hint="Oversized push-to-talk button — built for phone interpreters." checked={p.bigButton} onChange={p.onBigButtonChange} />
+        <SettingToggle
+          label="Beta (β) languages"
+          hint="German, French, Spanish, Arabic, Turkish, Italian: translation is reliable, but the synthesized voice is heavily accented. Off = only English (native-quality voice) is offered."
+          checked={p.betaLangs}
+          onChange={p.onBetaLangsChange}
+        />
       </SettingsSection>
 
       {/* ── Data & privacy (spec §6.1 + §12) ──────────────────────────────── */}
@@ -279,6 +330,26 @@ export function SettingsCenter(p: SettingsCenterProps) {
           checked={p.autoSaveHistory}
           onChange={p.onAutoSaveHistoryChange}
         />
+        {/* REAL retention control — enforced server-side on every history load */}
+        <div className="flex flex-col gap-1.5 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+          <Label className="text-xs font-semibold text-zinc-200">Auto-delete saved phrases older than</Label>
+          <Select value={String(p.historyRetentionDays)} onValueChange={(v) => p.onHistoryRetentionDaysChange(Number(v))}>
+            <SelectTrigger className="h-9 border-zinc-800 bg-zinc-900 text-sm focus-visible:ring-emerald-500/60" aria-label="History retention period">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="border-zinc-800 bg-zinc-900">
+              <SelectItem value="0">Never — keep everything</SelectItem>
+              <SelectItem value="7">7 days</SelectItem>
+              <SelectItem value="30">30 days</SelectItem>
+              <SelectItem value="90">90 days</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] leading-relaxed text-zinc-500">
+            {p.historyRetentionDays === 0
+              ? 'Text history is kept until you delete it. Audio is cached separately (rolling cap) and deleted with its phrase.'
+              : `Unstarred phrases older than ${p.historyRetentionDays} days (and their audio) are deleted automatically — enforced on the server, not just hidden.`}
+          </p>
+        </div>
         <div className="mt-1 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-[11px] leading-relaxed text-zinc-400">
           <p className="mb-1 flex items-center gap-1.5 font-semibold text-zinc-300">
             <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" aria-hidden /> Retention policy
@@ -321,6 +392,74 @@ export function SettingsCenter(p: SettingsCenterProps) {
             </div>
           )}
         </div>
+      </SettingsSection>
+
+      {/* ── Providers & connection (v1.2) — REAL status from the server ──── */}
+      <SettingsSection
+        icon={PlugZap}
+        title="Providers &amp; connection"
+        hint="Live status reported by the backend (no secrets). Run the full self-test in Info for real per-stage requests."
+      >
+        {providerStatus.offline ? (
+          <p className="rounded-xl border border-amber-900/50 bg-amber-950/30 p-3 text-[11px] leading-relaxed text-amber-200/90">
+            Provider status is unavailable — the backend is not reachable (static demo or server down). Run VoxShift locally for the full engine.
+          </p>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <ProviderChip
+              label="ASR (speech-to-text)"
+              engine={providerStatus.providers?.asr?.engine}
+              configured={providerStatus.providers?.asr?.configured}
+            />
+            <ProviderChip
+              label="Translation (LLM)"
+              engine={providerStatus.providers?.translation?.engine}
+              configured={providerStatus.providers?.translation?.configured}
+            />
+            <ProviderChip
+              label="TTS (speech synthesis)"
+              engine={providerStatus.providers?.voice?.engine}
+              configured={providerStatus.providers?.voice?.configured}
+            />
+            <ProviderChip
+              label="Voice cloning (ElevenLabs)"
+              engine={providerStatus.providers?.voiceClone?.engine}
+              configured={providerStatus.providers?.voiceClone?.configured}
+            />
+            <ProviderChip
+              label="Database (SQLite)"
+              engine="prisma"
+              configured={providerStatus.database?.ok}
+            />
+          </div>
+        )}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+          <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-zinc-300">
+            <KeyRound className="h-3.5 w-3.5 text-emerald-500" aria-hidden /> API keys &amp; environment
+          </p>
+          <p className="text-[11px] leading-relaxed text-zinc-500">
+            Keys live ONLY on the server (<code className="rounded bg-zinc-800 px-1 font-mono text-[10px]">.env</code>) and are never sent to the browser.
+            {providerStatus.providers?.voiceClone?.configured
+              ? ' Voice cloning is configured.'
+              : ' To enable real voice cloning add ELEVENLABS_API_KEY:'}
+          </p>
+          {!providerStatus.providers?.voiceClone?.configured &&
+            providerStatus.providers?.voiceClone?.setup?.steps?.length ? (
+            <ol className="list-decimal space-y-0.5 pl-4 text-[11px] leading-relaxed text-zinc-400">
+              {providerStatus.providers.voiceClone.setup.steps.map((st, i) => (
+                <li key={i}>{st}</li>
+              ))}
+            </ol>
+          ) : null}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={p.onOpenSelfTest}
+          className="h-8 w-fit gap-1.5 border-zinc-700 bg-zinc-900 text-xs hover:bg-zinc-800"
+        >
+          <PlugZap className="h-3.5 w-3.5" aria-hidden /> Run full self-test (real requests)
+        </Button>
       </SettingsSection>
 
       {/* ── Reset (spec §6.6) ─────────────────────────────────────────────── */}
@@ -400,6 +539,28 @@ function SettingToggle({
         <p className="mt-0.5 text-[11px] leading-relaxed text-zinc-500">{hint}</p>
       </div>
       <Switch checked={checked} onCheckedChange={onChange} aria-label={label} className="shrink-0" />
+    </div>
+  )
+}
+
+function ProviderChip({ label, engine, configured }: { label: string; engine?: string; configured?: boolean }) {
+  const state = configured === undefined ? 'checking' : configured ? 'ok' : 'missing'
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+      <div className="min-w-0">
+        <p className="truncate text-[11px] font-semibold text-zinc-200">{label}</p>
+        {engine && <p className="truncate font-mono text-[9px] uppercase text-zinc-600">{engine}</p>}
+      </div>
+      <span
+        className={cn(
+          'shrink-0 rounded-full border px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider',
+          state === 'ok' && 'border-emerald-700/60 bg-emerald-950/40 text-emerald-400',
+          state === 'missing' && 'border-amber-700/60 bg-amber-950/40 text-amber-400',
+          state === 'checking' && 'border-zinc-700 bg-zinc-900 text-zinc-500'
+        )}
+      >
+        {state === 'ok' ? 'CONFIGURED' : state === 'missing' ? 'MISSING' : '…'}
+      </span>
     </div>
   )
 }

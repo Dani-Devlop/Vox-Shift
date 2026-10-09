@@ -46,6 +46,17 @@ function clampStability(stability: number | undefined): number {
   return Math.min(1, Math.max(0, stability))
 }
 
+function clamp01(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback
+  return Math.min(1, Math.max(0, value))
+}
+
+/** Provider accepts style 0..0.45 for most models — clamp defensively. */
+function clampStyle(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value)) return 0
+  return Math.min(0.45, Math.max(0, value))
+}
+
 /** Resolve the API key from the service env, falling back to the project .env. */
 export function getElevenLabsApiKey(): string | null {
   if (process.env.ELEVENLABS_API_KEY) return process.env.ELEVENLABS_API_KEY
@@ -95,10 +106,11 @@ export class ElevenLabsCloneEngine {
   readonly id = 'elevenlabs-ivc'
 
   /**
-   * Create a provider-side cloned voice from a WAV sample (Instant Voice
-   * Cloning). The sample must already be a valid RIFF/WAV buffer.
+   * Create a provider-side cloned voice from one or more WAV samples (Instant
+   * Voice Cloning). Multiple takes improve the speaker embedding when the
+   * provider merges them — each file must be a valid RIFF/WAV buffer.
    */
-  async enroll(name: string, wav: Buffer): Promise<EnrollResult> {
+  async enroll(name: string, wavs: Buffer | Buffer[]): Promise<EnrollResult> {
     const key = getElevenLabsApiKey()
     if (!key) {
       throw new Error(
@@ -106,9 +118,14 @@ export class ElevenLabsCloneEngine {
       )
     }
 
+    const samples = (Array.isArray(wavs) ? wavs : [wavs]).slice(0, 3)
+    if (samples.length === 0) throw new Error('No voice samples provided for enrollment.')
+
     const form = new FormData()
     form.append('name', name.slice(0, 60) || 'VoxShift voice')
-    form.append('files', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'voice-sample.wav')
+    samples.forEach((wav, i) => {
+      form.append('files', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), `voice-sample-${i + 1}.wav`)
+    })
 
     const res = await fetch(`${ELEVEN_BASE}/voices/add`, {
       method: 'POST',
@@ -144,7 +161,18 @@ export class ElevenLabsCloneEngine {
    */
   async synthesize(
     text: string,
-    opts: { providerProfileId: string; speed: number; providerModel?: string | null; stability?: number }
+    opts: {
+      providerProfileId: string
+      speed: number
+      providerModel?: string | null
+      stability?: number
+      /** 0..1 — how strongly to match the enrolled speaker (provider-supported). */
+      similarityBoost?: number
+      /** 0..0.45 — style exaggeration (provider-supported range). */
+      styleExaggeration?: number
+      /** Provider speaker-boost flag (default true). */
+      useSpeakerBoost?: boolean
+    }
   ): Promise<Buffer> {
     const key = getElevenLabsApiKey()
     if (!key) {
@@ -159,9 +187,9 @@ export class ElevenLabsCloneEngine {
       model_id: modelId,
       voice_settings: {
         stability: clampStability(opts.stability),
-        similarity_boost: 0.8, // favor similarity to the enrolled speaker
-        style: 0.0,
-        use_speaker_boost: true, // +embedding strength at ~100ms latency cost
+        similarity_boost: clamp01(opts.similarityBoost, 0.8), // favor similarity to the enrolled speaker
+        style: clampStyle(opts.styleExaggeration),
+        use_speaker_boost: opts.useSpeakerBoost !== false, // +embedding strength at ~100ms latency cost
         speed: clampCloneSpeed(opts.speed),
       },
     }

@@ -126,6 +126,74 @@ function buildUserPrompt(text: string, history?: TranslationContextTurn[]): stri
   ].join('\n')
 }
 
+// ── Auto language detection ───────────────────────────────────────────────────
+// When the user picks the AUTO direction, the ASR text's language is unknown
+// (Finglish vs English vs German…). Detection runs INSIDE the same translation
+// call: the model reports the detected language + translation in one reply, so
+// auto mode costs no extra round-trip. Candidates are the app's enabled set.
+
+export const AUTO_DETECT_LANGS = ['fa', 'en', 'de', 'fr', 'es', 'ar', 'tr', 'it'] as const
+
+/** Parse the client-provided pair spec ('fa,en') into a valid 2-language list. */
+export function parseAutoPair(pair: string | undefined | null): [string, string] {
+  const parts = (pair ?? '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s) => (AUTO_DETECT_LANGS as readonly string[]).includes(s))
+  const a = parts[0] ?? 'fa'
+  const b = parts[1] && parts[1] !== a ? parts[1] : 'en'
+  return [a, b]
+}
+
+export interface AutoTranslateResult {
+  detectedLang: string
+  text: string
+}
+
+function buildAutoSystemPrompt(targetLang: string, style: StyleMode, candidates?: string[]): string {
+  const T = LANG_NAMES[targetLang] ?? targetLang
+  const allowed = (candidates ?? []).filter((l) => (AUTO_DETECT_LANGS as readonly string[]).includes(l))
+  const list = allowed.length >= 2 ? allowed : [...AUTO_DETECT_LANGS]
+  const candidateStr = list.map((l) => `${l} = ${LANG_NAMES[l] ?? l}`).join(', ')
+  // Reuse the exact style + target-language rules of the normal prompt.
+  const stylePrompt = buildSystemPrompt('fa', targetLang, style)
+    .split('\n')
+    .filter((line) => !line.startsWith('You are the translation core'))
+    .join('\n')
+  return [
+    `You are the translation core of a real-time live speech translator. The SOURCE language is UNKNOWN and must be detected per utterance, then translated into spoken ${T}.`,
+    '',
+    `DETECTION (critical):`,
+    `- Detect which of these languages the utterance is: ${candidateStr}.`,
+    `- Romanized Persian (Finglish, e.g. "Salam, khoobid?") is spoken PERSIAN → detect 'fa', never 'en'.`,
+    `- Detect ONLY from the listed set. If genuinely ambiguous between two, prefer the one with more non-English markers.`,
+    '',
+    'INPUT CHARACTERISTICS (important):',
+    '- The text comes from automatic speech recognition and may contain small recognition errors, missing punctuation, or run-together words. Silently recover the intended sentence before translating.',
+    '',
+    'STYLE + TARGET RULES:',
+    stylePrompt,
+    'OUTPUT FORMAT (strict — no deviations):',
+    'Line 1 exactly: DETECTED: <code from the list>',
+    'Line 2 exactly: TRANSLATION: <the translated sentence only>',
+    'No quotes, no extra lines, no notes. If the input is not understandable: DETECTED: fa / TRANSLATION: [unclear]',
+  ].join('\n')
+}
+
+function parseAutoReply(raw: string, candidates?: string[]): AutoTranslateResult {
+  const text = raw.trim()
+  const detected = text.match(/DETECTED:\s*([a-z]{2})/i)?.[1]?.toLowerCase() ?? ''
+  const translation =
+    text
+      .match(/TRANSLATION:\s*([\s\S]+)/i)?.[1]
+      ?.replace(/^\s*["“”«»'`]+|["“”«»'`]+\s*$/g, '')
+      .trim() ?? ''
+  const allowed = (candidates ?? []).filter((l) => (AUTO_DETECT_LANGS as readonly string[]).includes(l))
+  const validSet = allowed.length >= 2 ? allowed : [...AUTO_DETECT_LANGS]
+  const lang = validSet.includes(detected) ? detected : validSet[0]
+  return { detectedLang: lang, text: translation }
+}
+
 export class LLMTranslationEngine implements TranslationEngine {
   readonly id = 'zai-llm'
 
@@ -147,5 +215,35 @@ export class LLMTranslationEngine implements TranslationEngine {
     out = out.replace(/^["“”«»'`]+|["“”«»'`]+$/g, '').trim()
     if (out.startsWith('Translation:')) out = out.slice('Translation:'.length).trim()
     return out
+  }
+
+  /**
+   * AUTO-direction translate: detect the spoken language (from the enabled
+   * candidate set, Finglish → fa) and translate in ONE LLM round-trip.
+   * Context history is included the same way as the explicit direction.
+   * `candidates` narrows detection to the user's chosen pair when provided.
+   */
+  async translateAuto(
+    text: string,
+    opts: { targetLang: string; style: StyleMode; history?: TranslationContextTurn[]; candidates?: string[] }
+  ): Promise<AutoTranslateResult> {
+    const zai = await getZAI()
+    const completion = await zai.chat.completions.create({
+      messages: [
+        { role: 'assistant', content: buildAutoSystemPrompt(opts.targetLang, opts.style, opts.candidates) },
+        { role: 'user', content: buildUserPrompt(text, opts.history) },
+      ],
+      thinking: { type: 'disabled' },
+      temperature: 0.2,
+    })
+    const parsed = parseAutoReply(completion.choices[0]?.message?.content ?? '', opts.candidates)
+    if (!parsed.text) {
+      // Model ignored the format — fall back to treating the whole reply as the
+      // translation with an honest 'unknown' detection (reported as the target-side
+      // pair, never silently as a specific language).
+      const fallback = (completion.choices[0]?.message?.content ?? '').trim().slice(0, 500)
+      return { detectedLang: opts.targetLang === 'fa' ? 'en' : 'fa', text: fallback }
+    }
+    return parsed
   }
 }

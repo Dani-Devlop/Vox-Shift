@@ -18,12 +18,55 @@ export async function GET(req: NextRequest) {
     const limit = Math.min(MAX_LIMIT, Math.max(1, Number(searchParams.get('limit')) || 20))
     const cursor = searchParams.get('cursor') // ISO lastActivityAt of the last visible thread
 
+    // Case-insensitive search: SQLite `contains` is case-sensitive for non-ASCII
+    // (Prisma offers no `mode: 'insensitive'` on SQLite), so when searching we
+    // load a bounded recent window and filter in JavaScript — safe at personal
+    // scale (≤400 conversations, ≤4000 messages scanned).
+    if (q) {
+      const needle = q.toLowerCase()
+      const window = await db.conversation.findMany({
+        where: { userId },
+        orderBy: { lastActivityAt: 'desc' },
+        take: 400,
+        select: {
+          id: true,
+          title: true,
+          sourceLang: true,
+          targetLang: true,
+          overridesJson: true,
+          createdAt: true,
+          lastActivityAt: true,
+          _count: { select: { messages: true, sessions: true } },
+          messages: { select: { sourceText: true, translatedText: true }, orderBy: { createdAt: 'desc' }, take: 20 },
+        },
+      })
+      const matched = window.filter(
+        (c) =>
+          c.title.toLowerCase().includes(needle) ||
+          c.messages.some(
+            (m) => m.sourceText.toLowerCase().includes(needle) || m.translatedText.toLowerCase().includes(needle)
+          )
+      )
+      const page = matched.slice(0, limit)
+      return NextResponse.json({
+        conversations: page.map((c) => ({
+          id: c.id,
+          title: c.title,
+          sourceLang: c.sourceLang,
+          targetLang: c.targetLang,
+          hasOverrides: Boolean(c.overridesJson),
+          messageCount: c._count.messages,
+          sessionCount: c._count.sessions,
+          createdAt: c.createdAt.toISOString(),
+          lastActivityAt: c.lastActivityAt.toISOString(),
+        })),
+        nextCursor: matched.length > limit ? page[page.length - 1].lastActivityAt.toISOString() : null,
+      })
+    }
+
     const rows = await db.conversation.findMany({
       where: {
         userId,
-        ...(q
-          ? { OR: [{ title: { contains: q } }, { messages: { some: { sourceText: { contains: q } } } }, { messages: { some: { translatedText: { contains: q } } } }] }
-          : {}),
         ...(cursor ? { lastActivityAt: { lt: new Date(cursor) } } : {}),
       },
       orderBy: { lastActivityAt: 'desc' },

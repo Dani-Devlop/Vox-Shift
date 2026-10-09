@@ -29,7 +29,7 @@ import type { StyleMode } from '@/types/translator'
 import { LANG_META } from '@/types/translator'
 import { cn } from '@/lib/utils'
 
-const APP_VERSION = 'v1.1.0'
+const APP_VERSION = 'v1.2.0'
 
 export default function LiveTranslatorPage() {
   const t = useTranslator()
@@ -39,6 +39,8 @@ export default function LiveTranslatorPage() {
     style, voiceMode, mode, otherLang, playbackRate, playbackActive, bigButton,
     langPair, partial, liveCaption, pendingCount, sessionSpeechMs, sessionLangs,
     stats, lastError, uiPrefs, autoSaveHistory, useContext, showCaptions,
+    autoDetect, setAutoDetect, speaker, setSpeaker, availableOtherLangs, betaLangs, setBetaLangs,
+    historyRetentionDays, setHistoryRetentionDays,
     start, stop, setStyle, setVoiceMode, setMode, setOtherLang, setPlaybackRate,
     setBigButton, setTextSize, setCompact, setShowTranscript,
     setAutoSaveHistory, setUseContext, setShowCaptions,
@@ -411,6 +413,13 @@ export default function LiveTranslatorPage() {
                   onRetryFailed={lastError?.payload ? () => retryFailed() : undefined}
                   onDismissError={clearError}
                   textScale={uiPrefs.textSize}
+                  speaker={speaker}
+                  onSpeakerChange={setSpeaker}
+                  speakerNote={
+                    autoDetect
+                      ? 'No automatic speaker diarization — switch manually when the other person talks. Each side is detected and translated to the opposite language.'
+                      : 'Speaker detection is not automatic — switch manually. Tip: turn on Auto-detect (Setup) so BOTH sides are translated in the right direction.'
+                  }
                 />
               </div>
 
@@ -446,6 +455,9 @@ export default function LiveTranslatorPage() {
                 onModeChange={setMode}
                 otherLang={otherLang}
                 onOtherLangChange={setOtherLang}
+                autoDetect={autoDetect}
+                onAutoDetectChange={setAutoDetect}
+                availableLangs={availableOtherLangs}
                 playbackRate={playbackRate}
                 onPlaybackRateChange={setPlaybackRate}
                 bigButton={bigButton}
@@ -486,6 +498,7 @@ export default function LiveTranslatorPage() {
           onLoadMoreHistory={() => loadMoreHistory()}
           onClearHistory={clearHistory}
           onToggleStar={(id) => toggleStar(id)}
+          onDeleteHistory={(id) => deleteHistoryEntry(id)}
           onShareSaved={(entry) => void shareSaved(entry.id, entry.translated, entry.translated, entry.hasAudio)}
           onReuse={(entry) => void translateText(entry.source)}
           playbackRate={playbackRate}
@@ -538,6 +551,14 @@ export default function LiveTranslatorPage() {
           onAutoSaveHistoryChange={setAutoSaveHistory}
           onUseContextChange={setUseContext}
           onShowCaptionsChange={setShowCaptions}
+          autoDetect={autoDetect}
+          onAutoDetectChange={setAutoDetect}
+          betaLangs={betaLangs}
+          onBetaLangsChange={setBetaLangs}
+          historyRetentionDays={historyRetentionDays}
+          onHistoryRetentionDaysChange={setHistoryRetentionDays}
+          availableLangs={availableOtherLangs}
+          onOpenSelfTest={() => changeView('about')}
           onSelectProfile={selectProfile}
           onClearHistory={clearHistory}
           historyCount={history?.length ?? 0}
@@ -545,7 +566,7 @@ export default function LiveTranslatorPage() {
       )}
 
       {/* ═══ VIEW: About · Diagnostics ═════════════════════════════════════ */}
-      {view === 'about' && <AboutView />}
+      {view === 'about' && <AboutView connected={connected} speaker={speaker} />}
 
       {threadLoading && (
         <div className="fixed inset-x-0 top-16 z-50 flex justify-center" aria-live="polite">

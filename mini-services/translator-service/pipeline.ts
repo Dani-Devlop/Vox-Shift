@@ -9,7 +9,7 @@ import type {
   UtteranceResult,
 } from './types'
 import { ZaiASREngine } from './engines/asr'
-import { LLMTranslationEngine, type TranslationContextTurn } from './engines/translator'
+import { LLMTranslationEngine, parseAutoPair, type TranslationContextTurn } from './engines/translator'
 import { VoiceIdentityEngine } from './engines/voice'
 import { pcmToWav } from './engines/audio-utils'
 
@@ -57,6 +57,7 @@ function baseResult(req: {
   sourceLang: string
   targetLang: string
   profileMode?: 'clone' | 'voice-match'
+  speakerRole?: 'A' | 'B'
 }) {
   return {
     utteranceId: req.utteranceId,
@@ -66,6 +67,7 @@ function baseResult(req: {
     voiceMode: (req.profileMode ?? 'default') as 'clone' | 'voice-match' | 'default',
     sourceLang: req.sourceLang,
     targetLang: req.targetLang,
+    speakerRole: req.speakerRole,
   }
 }
 
@@ -84,6 +86,11 @@ async function translateAndSpeak(
     providerProfileId?: string
     providerModel?: string
     stability?: number
+    providerSimilarity?: number
+    providerStyle?: number
+    speakerRole?: 'A' | 'B'
+    /** 'fa,en' — the two sides of an AUTO conversation (detect → other side). */
+    autoPair?: string
   },
   sourceText: string,
   asrMs: number,
@@ -92,33 +99,80 @@ async function translateAndSpeak(
 ): Promise<void> {
   const { utteranceId, sessionId } = req
 
-  // ── Stage 2: Natural translation ─────────────────────────────────────────
+  // ── Stage 2: Natural translation (with optional language auto-detect) ────
   const t0 = Date.now()
   handlers.onStage({ utteranceId, stage: 'translate', status: 'start' })
   let translatedText = ''
+  // When the client picked the AUTO direction, the source language is unknown:
+  // detection + translation happen in ONE LLM call (no extra latency). With a
+  // declared pair (sourceLang 'auto' + targetLang 'auto' + autoPair 'fa,en')
+  // the TARGET is the OTHER side of the pair — a true bidirectional
+  // conversation: speak fa → hear the pair's other language, and vice versa.
+  const auto = req.sourceLang === 'auto'
+  const pairAuto = auto && req.targetLang === 'auto'
+  const [pairA, pairB] = pairAuto ? parseAutoPair(req.autoPair) : ['fa', 'en'] as [string, string]
+  let detectedLang: string | undefined
+  let effectiveSource = req.sourceLang
+  let effectiveTarget = req.targetLang
   try {
-    translatedText = await translateEngine.translate(sourceText, {
-      sourceLang: req.sourceLang,
-      targetLang: req.targetLang,
-      style: req.style,
-      history: getHistory(sessionId),
-    })
+    if (auto) {
+      const autoRes = await translateEngine.translateAuto(sourceText, {
+        // Pair mode: translate into the OTHER side of the pair once detected.
+        // Simple auto: keep the client's fixed target.
+        targetLang: pairAuto ? pairA : req.targetLang,
+        style: req.style,
+        history: getHistory(sessionId),
+        candidates: pairAuto ? [pairA, pairB] : undefined,
+      })
+      translatedText = autoRes.text
+      detectedLang = autoRes.detectedLang
+      effectiveSource = detectedLang
+      effectiveTarget = pairAuto ? (detectedLang === pairA ? pairB : pairA) : req.targetLang
+      if (!pairAuto) {
+        // Detected language outside candidates still translates to the fixed target.
+        effectiveTarget = req.targetLang
+      }
+    } else {
+      translatedText = await translateEngine.translate(sourceText, {
+        sourceLang: req.sourceLang,
+        targetLang: req.targetLang,
+        style: req.style,
+        history: getHistory(sessionId),
+      })
+    }
   } catch {
     // One retry on transient LLM failure
-    translatedText = await translateEngine.translate(sourceText, {
-      sourceLang: req.sourceLang,
-      targetLang: req.targetLang,
-      style: req.style,
-    })
+    try {
+      if (auto) {
+        const autoRes = await translateEngine.translateAuto(sourceText, {
+          targetLang: pairAuto ? pairA : req.targetLang,
+          style: req.style,
+          candidates: pairAuto ? [pairA, pairB] : undefined,
+        })
+        translatedText = autoRes.text
+        detectedLang = autoRes.detectedLang
+        effectiveSource = detectedLang
+        effectiveTarget = pairAuto ? (detectedLang === pairA ? pairB : pairA) : req.targetLang
+      } else {
+        translatedText = await translateEngine.translate(sourceText, {
+          sourceLang: req.sourceLang,
+          targetLang: req.targetLang,
+          style: req.style,
+        })
+      }
+    } catch (retryErr) {
+      throw retryErr instanceof Error ? retryErr : new Error('Translation failed')
+    }
   }
   const translateMs = Date.now() - t0
   handlers.onStage({ utteranceId, stage: 'translate', status: 'done', ms: translateMs })
 
   if (!translatedText || translatedText === '[unclear]') {
     handlers.onResult({
-      ...baseResult(req),
+      ...baseResult({ ...req, sourceLang: effectiveSource, targetLang: effectiveTarget }),
       sourceText,
       translatedText: '',
+      detectedLang: auto ? detectedLang : undefined,
       timings: { asrMs, translateMs, ttsMs: 0, totalMs: Date.now() - startedAt },
     })
     return
@@ -131,9 +185,10 @@ async function translateAndSpeak(
     utteranceId,
     sourceText,
     translatedText,
-    sourceLang: req.sourceLang,
-    targetLang: req.targetLang,
+    sourceLang: effectiveSource,
+    targetLang: effectiveTarget,
     voice: req.voice,
+    speakerRole: req.speakerRole,
   })
 
   // ── Stage 3: Voice identity synthesis ────────────────────────────────────
@@ -149,6 +204,8 @@ async function translateAndSpeak(
       providerProfileId: req.providerProfileId,
       providerModel: req.providerModel,
       stability: req.stability,
+      providerSimilarity: req.providerSimilarity,
+      providerStyle: req.providerStyle,
     })
     audioBase64 = audioBuffer.toString('base64')
   } catch (err) {
@@ -160,9 +217,10 @@ async function translateAndSpeak(
     })
     // Still deliver the text result so the UI shows the translation.
     handlers.onResult({
-      ...baseResult(req),
+      ...baseResult({ ...req, sourceLang: effectiveSource, targetLang: effectiveTarget }),
       sourceText,
       translatedText,
+      detectedLang: auto ? detectedLang : undefined,
       timings: { asrMs, translateMs, ttsMs: Date.now() - t1, totalMs: Date.now() - startedAt },
     })
     return
@@ -171,10 +229,11 @@ async function translateAndSpeak(
   handlers.onStage({ utteranceId, stage: 'tts', status: 'done', ms: ttsMs })
 
   handlers.onResult({
-    ...baseResult(req),
+    ...baseResult({ ...req, sourceLang: effectiveSource, targetLang: effectiveTarget }),
     sourceText,
     translatedText,
     audioBase64,
+    detectedLang: auto ? detectedLang : undefined,
     timings: { asrMs, translateMs, ttsMs, totalMs: Date.now() - startedAt },
   })
 }

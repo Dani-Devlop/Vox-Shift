@@ -49,6 +49,12 @@ interface LivePanelProps {
   onDismissError?: () => void
   /** UI text-size preference (spec §4.4) — scales the hero text. */
   textScale?: 'sm' | 'md' | 'lg'
+  /** Manual speaker turn for two-person conversations (NO engine diarization —
+   *  the UI labels each turn and the honest hint explains the limitation). */
+  speaker?: 'A' | 'B'
+  onSpeakerChange?: (role: 'A' | 'B') => void
+  /** Honest note shown under the speaker control (diarization limitation). */
+  speakerNote?: string
 }
 
 const STAGE_LABEL: Record<PipelineStage, string> = {
@@ -72,7 +78,7 @@ const HERO_TGT: Record<'sm' | 'md' | 'lg', string> = {
   lg: 'text-2xl sm:text-3xl',
 }
 
-export function LivePanel({ latest, status, activeStage, langPair, partial, liveCaption, pendingCount = 1, canReplay, onReplay, onDownload, onShare, onTranslateText, onPushToTalk, bigButton, present, onTogglePresent, abProfile = null, abProfileId = null, playbackActive = false, lastError = null, onRetryFailed, onDismissError, textScale = 'md' }: LivePanelProps) {
+export function LivePanel({ latest, status, activeStage, langPair, partial, liveCaption, pendingCount = 1, canReplay, onReplay, onDownload, onShare, onTranslateText, onPushToTalk, bigButton, present, onTogglePresent, abProfile = null, abProfileId = null, playbackActive = false, lastError = null, onRetryFailed, onDismissError, textScale = 'md', speaker, onSpeakerChange, speakerNote }: LivePanelProps) {
   const processing = activeStage !== null
   const [copied, setCopied] = useState(false)
   const [draft, setDraft] = useState('')
@@ -665,6 +671,39 @@ export function LivePanel({ latest, status, activeStage, langPair, partial, live
             SPACE
           </kbd>
         </button>
+      )}
+
+      {/* Manual speaker turn — two-person conversations. Honest: the ASR engine
+          has NO diarization, so who is speaking is an explicit user action. */}
+      {onSpeakerChange && (
+        <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2.5">
+          <div className="flex items-center gap-2" role="radiogroup" aria-label="Current speaker">
+            {(['A', 'B'] as const).map((role) => {
+              const active = (speaker ?? 'A') === role
+              return (
+                <button
+                  key={role}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  onClick={() => onSpeakerChange(role)}
+                  className={cn(
+                    'inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border text-xs font-bold uppercase tracking-[0.14em] transition-all',
+                    active
+                      ? 'border-teal-500/70 bg-teal-950/50 text-teal-200 shadow-[0_0_18px_-6px_rgba(45,212,191,0.7)]'
+                      : 'border-zinc-800 bg-zinc-900 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+                  )}
+                >
+                  <AudioLines className={cn('h-3.5 w-3.5', active && role === 'B' && 'text-teal-300')} aria-hidden />
+                  Speaker {role}
+                  {role === 'A' && <span className="hidden text-[9px] font-medium normal-case tracking-normal text-zinc-500 sm:inline">(your voice)</span>}
+                  {role === 'B' && <span className="hidden text-[9px] font-medium normal-case tracking-normal text-zinc-500 sm:inline">(2nd voice)</span>}
+                </button>
+              )
+            })}
+          </div>
+          <p className="mt-1.5 px-0.5 text-[10px] leading-snug text-zinc-600">{speakerNote ?? 'Speaker detection is not automatic — tap the button when the other person takes a turn. Speaker B is spoken with a distinct voice.'}</p>
+        </div>
       )}
 
       {/* Type-to-translate — same pipeline, no ASR */}

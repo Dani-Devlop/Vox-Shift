@@ -30,6 +30,12 @@ function sanitize(input: Record<string, unknown>): Record<string, unknown> {
   if (typeof input.autoSaveHistory === 'boolean') out.autoSaveHistory = input.autoSaveHistory
   if (typeof input.useContext === 'boolean') out.useContext = input.useContext
   if (typeof input.showCaptions === 'boolean') out.showCaptions = input.showCaptions
+  // AUTO direction + language availability + history retention (v1.2)
+  if (typeof input.autoDetect === 'boolean') out.autoDetect = input.autoDetect
+  if (typeof input.betaLangs === 'boolean') out.betaLangs = input.betaLangs
+  if (typeof input.historyRetentionDays === 'number' && [0, 7, 30, 90].includes(input.historyRetentionDays)) {
+    out.historyRetentionDays = input.historyRetentionDays
+  }
   return out
 }
 

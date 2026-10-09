@@ -187,6 +187,23 @@ export function TranscriptList({ entries, onClear, onReplay }: TranscriptListPro
                       <span className="text-zinc-700">→</span>
                       <span aria-hidden>{tgtMeta?.flag ?? '·'}</span>
                     </span>
+                    {(entry.speakerRole === 'A' || entry.speakerRole === 'B') && (
+                      <span
+                        className={cn(
+                          'rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase',
+                          entry.speakerRole === 'B'
+                            ? 'border-teal-800/60 bg-teal-950/40 text-teal-300'
+                            : 'border-zinc-800 bg-zinc-900 text-zinc-500'
+                        )}
+                      >
+                        {entry.speakerRole === 'B' ? 'Speaker B' : 'Speaker A'}
+                      </span>
+                    )}
+                    {entry.voiceMode === 'clone' && (
+                      <span className="rounded-full bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase text-emerald-400" title="Spoken with your real cloned voice">
+                        clone
+                      </span>
+                    )}
                     <TimeChip iso={entry.createdAt} />
                   </div>
 

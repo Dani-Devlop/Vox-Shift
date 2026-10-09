@@ -1,5 +1,76 @@
 # Changelog — VoxShift
 
+## 1.2.0 — Interpreter Engine, Real Self-Test & Production Readiness
+
+Implements the "Fix Core Functionality, Voice Identity & Interpreter Mode" task.
+
+### Interpreter engine — real two-way conversation
+- **AUTO direction**: new Auto-detect mode detects the spoken language per
+  utterance (Finglish counts as Persian) and translates to the OTHER side of
+  the chosen pair — a true bidirectional fa↔en (or fa↔de/fr/es/ar/tr/it)
+  conversation in one LLM round-trip (no extra latency).
+- **Manual speaker turns**: Speaker A/B control in the live panel. Speaker B
+  speaks the opposite side with a distinct default voice so both sides of the
+  dialogue are audibly different. Every turn is labeled in the transcript and
+  persisted with the message (speakerRole). Honest: the ASR engine provides NO
+  diarization — the UI says so explicitly.
+- **Per-turn records**: original text, translation, direction (detected
+  language when auto), speaker, timings and audio flag are all recorded and
+  shown per entry.
+- Push-to-talk (button + Space), oversized big-button mode, and the playback
+  echo-guard (mic ducking during synthesis) prevent re-recording translated
+  audio.
+
+### Voice Identity upgrades
+- **Multi-sample enrollment**: up to 3 takes recorded separately and uploaded
+  TOGETHER — the provider merges them into one stronger speaker embedding.
+- **Real sample-quality review**: loudness (dBFS), clipping %, duration and
+  actionable re-record coaching computed from the actual PCM before submit.
+- **Provider voice settings**: stability, similarity boost and style
+  exaggeration sliders — at enrollment AND on the enrolled profile — all
+  passed through to the provider's voice_settings.
+- **Honest progress**: only real completed steps get ✓; during the single
+  provider request the UI shows the true elapsed time and states that no ETA
+  is available. States: not enrolled → recording → review → analyzing →
+  ready / failed (with the exact provider error).
+
+### Real self-test (Info page) — no fake values
+- POST /api/diagnostics runs REAL probes per stage: TTS synthesizes a phrase,
+  ASR transcribes it back (genuine round-trip), LLM translates, the cloning
+  provider account is queried when configured, the database performs a real
+  write→read→delete, and the realtime service answers a real engine.io
+  handshake. Every stage reports status · measured ms · stable error code
+  (TIMEOUT / AUTH / RATE_LIMIT / NETWORK / PROVIDER_5XX / SERVICE_DOWN /
+  DB_ERROR / NOT_CONFIGURED) · an explainable message. `unconfigured` is a
+  distinct honest state — cloning missing never pretends to fail.
+
+### Sessions & threads
+- Case-insensitive conversation search (title + transcript) — reliable for
+  Persian and mixed-case queries on SQLite.
+- Single-entry delete (text + cached audio, thread messages unlinked) with
+  ownership checks; audio streaming route now verifies ownership.
+- User-configured retention policy (keep forever / 7 / 30 / 90 days) enforced
+  server-side on every history load — unstarred entries and their audio are
+  really deleted, not hidden.
+- Per-thread overrides completed: direction, other language, style, voice
+  profile, playback speed and big-button talk — all inherit-from-global by
+  default and independent of global settings; a settings gear now also sits on
+  every conversation row (Sessions + drawer).
+
+### Settings (Setup) rebuild
+- New "Providers & connection" section with live CONFIGURED/MISSING chips and
+  a real self-test shortcut; API-keys card documents ELEVENLABS_API_KEY setup
+  (keys stay server-side, never exposed).
+- Auto-detect toggle, β-language visibility toggle (English is the only
+  native-quality TTS voice — honest labeling), and the retention selector.
+
+### Production readiness
+- `tests/integration/run.ts`: real integration runner (gateway, self-test,
+  thread storage lifecycle, preferences round-trip, realtime text +
+  auto-detect probes, cloning honesty) — `bun tests/integration/run.ts`.
+- Version strings unified at 1.2.0 (header, About, diagnostics, changelog).
+- README: live demo link, deployment and environment documentation.
+
 ## 1.1.0 — Real Voice Cloning (ElevenLabs IVC)
 
 Implements the "Fix and Upgrade Voice Identity" task: recording your voice now

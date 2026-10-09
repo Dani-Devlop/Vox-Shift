@@ -11,7 +11,7 @@ import {
 import { Switch } from '@/components/ui/switch'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
 import type { Mode, OtherLang, StyleMode, UIPrefs } from '@/types/translator'
-import { LANG_META, OTHER_LANGS } from '@/types/translator'
+import { LANG_META } from '@/types/translator'
 
 interface SettingsCardProps {
   style: StyleMode
@@ -25,6 +25,11 @@ interface SettingsCardProps {
   onModeChange: (mode: Mode) => void
   otherLang: OtherLang
   onOtherLangChange: (lang: OtherLang) => void
+  /** AUTO direction — detect the spoken language per utterance (fa ↔ other). */
+  autoDetect: boolean
+  onAutoDetectChange: (on: boolean) => void
+  /** Languages offered (β hideable in Setup). */
+  availableLangs: readonly OtherLang[]
   playbackRate: number
   onPlaybackRateChange: (rate: number) => void
   /** Big-button talk mode — oversized push-to-talk for phone interpreters. */
@@ -58,6 +63,9 @@ export function SettingsCard({
   onModeChange,
   otherLang,
   onOtherLangChange,
+  autoDetect,
+  onAutoDetectChange,
+  availableLangs,
   playbackRate,
   onPlaybackRateChange,
   bigButton,
@@ -81,8 +89,25 @@ export function SettingsCard({
       </header>
 
       <div className="space-y-4">
+        {/* AUTO direction — real bidirectional conversation (detect → other side) */}
+        <div className="flex items-start justify-between gap-3 rounded-xl border border-teal-900/50 bg-teal-950/20 px-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold text-teal-200">Auto-detect language</p>
+            <p className="mt-0.5 text-[11px] leading-snug text-zinc-500">
+              Two-way conversation: speak either language — it is detected and translated to the
+              other side ({LANG_META.fa.name} ↔ {LANG_META[otherLang].name}). Overrides Dub/Interpreter.
+            </p>
+          </div>
+          <Switch
+            checked={autoDetect}
+            onCheckedChange={onAutoDetectChange}
+            aria-label="Auto-detect the spoken language"
+            className="mt-0.5 data-[state=checked]:bg-teal-600"
+          />
+        </div>
+
         {/* Mode — Dub (Persian → X) or Interpreter (X → Persian) */}
-        <div>
+        <div className={autoDetect ? 'pointer-events-none opacity-40' : ''}>
           <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             <ArrowLeftRight className="h-3 w-3" aria-hidden /> Mode
           </label>
@@ -131,7 +156,7 @@ export function SettingsCard({
         </div>
 
         {/* Language of the non-Persian side */}
-        <div>
+        <div className={autoDetect ? 'pointer-events-none opacity-40' : ''}>
           <label className="mb-1.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
             <Languages className="h-3 w-3" aria-hidden />{' '}
             {isDub ? 'Output language' : 'Input language'}
@@ -144,12 +169,15 @@ export function SettingsCard({
               <SelectValue placeholder="Select language" />
             </SelectTrigger>
             <SelectContent className="border-zinc-800 bg-zinc-900">
-              {OTHER_LANGS.map((code) => (
+              {availableLangs.map((code) => (
                 <SelectItem key={code} value={code} className="text-sm">
                   <span className="flex items-center gap-2">
                     <span aria-hidden>{LANG_META[code].flag}</span>
                     {LANG_META[code].name}
                     <span className="ml-1 font-mono text-[10px] uppercase text-zinc-500">{code}</span>
+                    {LANG_META[code].tts === 'beta' && (
+                      <span className="rounded-full border border-amber-500/40 px-1 text-[8px] font-bold leading-4 text-amber-400" title="Speech output is accented (β)">β</span>
+                    )}
                   </span>
                 </SelectItem>
               ))}

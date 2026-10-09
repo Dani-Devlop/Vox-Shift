@@ -69,6 +69,26 @@ See [.env.example](./.env.example). Provider credentials are resolved by the
 browser**. Missing credentials are reported honestly in About · Diagnostics →
 *Run self-test*.
 
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | yes | SQLite file for profiles, threads, history (e.g. `file:/home/z/my-project/db/custom.db`) |
+| `ELEVENLABS_API_KEY` | optional | Enables REAL cross-language voice cloning (ElevenLabs IVC). Without it the app runs in honest pitch-conformed voice-match mode and every surface explains how to enable cloning |
+| `TRANSLATOR_SERVICE_URL` | optional | Realtime service probe target for the self-test (default `http://127.0.0.1:3003`) |
+
+### Deploy & run
+
+```bash
+bun install
+bun run db:push                                  # create/update SQLite schema
+bun run dev                                      # Next.js UI + API on :3000
+cd mini-services/translator-service && bun run dev   # realtime engine on :3003
+# Caddy gateway (:81) fronts both — the UI is served through :81
+bun tests/integration/run.ts                     # real integration test suite
+```
+
+GitHub Pages serves a static UI demo (auto-deployed on push to `main`); the
+real-time engine requires the local backend as documented above.
+
 ## Database
 
 Prisma models: `User` (anonymous cookie identity), `VoiceProfile` (acoustic

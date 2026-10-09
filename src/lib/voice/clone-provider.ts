@@ -73,14 +73,21 @@ function authHeaders(): HeadersInit {
   return { 'xi-api-key': process.env.ELEVENLABS_API_KEY ?? '' }
 }
 
-/** Enroll a WAV sample → provider voice id (Instant Voice Cloning). */
+/** Enroll one or more WAV samples → provider voice id (Instant Voice Cloning).
+ *  Multiple takes are uploaded together — the provider merges them into one
+ *  stronger speaker embedding. */
 export async function enrollCloneVoice(
   name: string,
-  wav: Buffer
+  wavs: Buffer | Buffer[]
 ): Promise<{ providerProfileId: string; requiresVerification: boolean }> {
+  const samples = (Array.isArray(wavs) ? wavs : [wavs]).slice(0, 3)
+  if (samples.length === 0) throw new Error('No voice samples provided for enrollment.')
+
   const form = new FormData()
   form.append('name', name.slice(0, 60) || 'VoxShift voice')
-  form.append('files', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), 'voice-sample.wav')
+  samples.forEach((wav, i) => {
+    form.append('files', new Blob([new Uint8Array(wav)], { type: 'audio/wav' }), `voice-sample-${i + 1}.wav`)
+  })
 
   const res = await fetch(`${ELEVEN_BASE}/voices/add`, {
     method: 'POST',
@@ -100,16 +107,29 @@ export async function enrollCloneVoice(
  */
 export async function synthesizeCloneVoice(
   text: string,
-  opts: { providerProfileId: string; modelKey?: string | null; speed: number; stability: number }
+  opts: {
+    providerProfileId: string
+    modelKey?: string | null
+    speed: number
+    stability: number
+    /** 0..1 — provider similarity boost (higher = closer to the enrolled voice). */
+    similarityBoost?: number
+    /** 0..0.45 — provider style exaggeration. */
+    style?: number
+    /** Provider speaker-boost flag (default true). */
+    useSpeakerBoost?: boolean
+  }
 ): Promise<Buffer> {
+  const clamp01 = (v: number | undefined, fb: number) =>
+    v === undefined || !Number.isFinite(v) ? fb : Math.min(1, Math.max(0, v))
   const payload = {
     text: text.slice(0, 2500),
     model_id: resolveCloneModel(opts.modelKey),
     voice_settings: {
       stability: Math.min(1, Math.max(0, opts.stability || 0.5)),
-      similarity_boost: 0.8,
-      style: 0.0,
-      use_speaker_boost: true,
+      similarity_boost: clamp01(opts.similarityBoost, 0.8),
+      style: opts.style === undefined || !Number.isFinite(opts.style) ? 0 : Math.min(0.45, Math.max(0, opts.style)),
+      use_speaker_boost: opts.useSpeakerBoost !== false,
       speed: Math.min(1.2, Math.max(0.7, Number.isFinite(opts.speed) ? opts.speed : 1)),
     },
   }
