@@ -23,7 +23,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
     const conversation = await ownedConversation(id, userId)
     if (!conversation) return NextResponse.json({ error: 'Conversation not found' }, { status: 404 })
 
-    const [sessions, messages] = await Promise.all([
+    const [sessions, messages, speakers] = await Promise.all([
       db.conversationSession.findMany({
         where: { conversationId: conversation.id },
         orderBy: { startedAt: 'asc' },
@@ -34,6 +34,7 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
         orderBy: { sequenceNo: 'asc' },
         take: 500,
       }),
+      db.conversationSpeaker.findMany({ where: { conversationId: conversation.id }, orderBy: { clusterKey: 'asc' } }),
     ])
 
     return NextResponse.json({
@@ -53,6 +54,12 @@ export async function GET(_req: NextRequest, ctx: { params: Promise<{ id: string
         endedAt: s.endedAt?.toISOString() ?? null,
       })),
       messages: messages.map(messageShape),
+      speakers: speakers.map((s) => ({
+        clusterKey: s.clusterKey,
+        contactId: s.contactId,
+        displayName: s.displayName,
+        vector: s.embeddingJson ? JSON.parse(s.embeddingJson) : null,
+      })),
     })
   } catch (err) {
     console.error('[api/conversations/[id]] GET failed:', err)
@@ -164,6 +171,11 @@ function messageShape(m: {
   timingsJson: string | null
   historyEntryId: string | null
   processingStatus: string
+  speakerKey: string | null
+  speakerContactId: string | null
+  speakerName: string | null
+  identificationStatus: string | null
+  speakerConfidence: number | null
   createdAt: Date
 }) {
   return {
@@ -180,6 +192,11 @@ function messageShape(m: {
     timings: safeJson(m.timingsJson),
     historyEntryId: m.historyEntryId,
     processingStatus: m.processingStatus,
+    speakerKey: m.speakerKey,
+    speakerContactId: m.speakerContactId,
+    speakerName: m.speakerName,
+    identificationStatus: m.identificationStatus,
+    speakerConfidence: m.speakerConfidence,
     createdAt: m.createdAt.toISOString(),
   }
 }

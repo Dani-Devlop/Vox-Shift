@@ -23,13 +23,16 @@ import { ThreadView } from '@/components/translator/thread-view'
 import { AppShell, viewFromHash, type AppView } from '@/components/shell/app-shell'
 import { SessionsView } from '@/components/translator/sessions-view'
 import { VoiceIdentityView } from '@/components/translator/voice-identity-view'
+import { VoiceContactsView } from '@/components/translator/voice-contacts-view'
+import { IdentifySpeakerDialog } from '@/components/translator/identify-speaker-dialog'
+import { SpeakerChip } from '@/components/translator/speaker-chip'
 import { SettingsCenter } from '@/components/translator/settings-center'
 import { AboutView } from '@/components/translator/about-view'
 import type { StyleMode } from '@/types/translator'
 import { LANG_META } from '@/types/translator'
 import { cn } from '@/lib/utils'
 
-const APP_VERSION = 'v1.2.0'
+const APP_VERSION = 'v2.2.0'
 
 export default function LiveTranslatorPage() {
   const t = useTranslator()
@@ -48,13 +51,23 @@ export default function LiveTranslatorPage() {
     createProfile, selectProfile, renameProfile, deleteProfile, updateCloneSettings,
     clearTranscript, retryFailed, clearError,
     history, historyLoading, historyCursor, loadHistory, loadMoreHistory, clearHistory, toggleStar,
+    deleteHistoryEntry,
     conversations, conversationsLoading, activeThread, threadLoading, threadSession,
     loadConversations, openThread, closeThread, createConversation, renameConversation,
     deleteConversation, saveThreadOverrides,
+    // v2: voice contacts + speaker recognition + provider health
+    contacts, contactsLoading, loadContacts, createContact, updateContact, deleteContact, reenrollContact,
+    speakers, identify, startIdentify, cancelIdentify, confirmIdentify, confirmCandidate, keepUnknown, correctSpeaker,
+    providerHealth, requestProviderHealth, reloadProviders, lastProviders,
   } = t
 
   const latest = useMemo(() => transcript[0] ?? null, [transcript])
   const live = status !== 'idle' && status !== 'starting'
+  /** Active speaker (v2 §29): the attribution of the most recent phrase. */
+  const activeSpeaker = useMemo(
+    () => (latest?.speakerKey ? speakers[latest.speakerKey] : undefined),
+    [latest, speakers]
+  )
   const srcMeta = LANG_META[langPair.sourceLang] ?? LANG_META.fa
   const tgtMeta = LANG_META[langPair.targetLang] ?? LANG_META.en
   const canReplayLatest = Boolean(latest?.hasAudio) && status === 'idle'
@@ -385,6 +398,16 @@ export default function LiveTranslatorPage() {
                     sourceLangName={srcMeta.name}
                     targetLangName={tgtMeta.name}
                   />
+                  {/* Active speaker — real recognition, honest status (§29) */}
+                  <div className="flex items-center gap-2" aria-live="polite">
+                    <SpeakerChip
+                      info={activeSpeaker}
+                      fallback={latest?.speakerRole === 'B' ? 'Speaker B' : latest ? 'Speaker A' : undefined}
+                      onStartIdentify={startIdentify}
+                      onConfirmCandidate={confirmCandidate}
+                      onKeepUnknown={keepUnknown}
+                    />
+                  </div>
                 </div>
               </section>
 
@@ -416,9 +439,7 @@ export default function LiveTranslatorPage() {
                   speaker={speaker}
                   onSpeakerChange={setSpeaker}
                   speakerNote={
-                    autoDetect
-                      ? 'No automatic speaker diarization — switch manually when the other person talks. Each side is detected and translated to the opposite language.'
-                      : 'Speaker detection is not automatic — switch manually. Tip: turn on Auto-detect (Setup) so BOTH sides are translated in the right direction.'
+                    'Speaker recognition is automatic (local voiceprints): known contacts are named, unknown voices get stable “Unknown N” labels — never a guess. The A/B switch below forces the translation direction for each side.'
                   }
                 />
               </div>
@@ -437,7 +458,15 @@ export default function LiveTranslatorPage() {
                     onReplay={(m) => replayThreadMessage(m.historyEntryId)}
                   />
                 ) : uiPrefs.showTranscript ? (
-                  <TranscriptList entries={transcript} onClear={clearTranscript} onReplay={replay} />
+                  <TranscriptList
+                    entries={transcript}
+                    onClear={clearTranscript}
+                    onReplay={replay}
+                    speakers={speakers}
+                    onStartIdentify={startIdentify}
+                    onConfirmCandidate={confirmCandidate}
+                    onKeepUnknown={keepUnknown}
+                  />
                 ) : null}
               </div>
             </div>
@@ -506,6 +535,19 @@ export default function LiveTranslatorPage() {
         />
       )}
 
+      {/* ═══ VIEW: Voice Contacts ══════════════════════════════════════════ */}
+      {view === 'contacts' && (
+        <VoiceContactsView
+          contacts={contacts}
+          loading={contactsLoading}
+          onLoad={() => void loadContacts()}
+          onCreate={createContact}
+          onUpdate={updateContact}
+          onDelete={deleteContact}
+          onReenroll={reenrollContact}
+        />
+      )}
+
       {/* ═══ VIEW: Voice Identity ══════════════════════════════════════════ */}
       {view === 'voice' && (
         <VoiceIdentityView
@@ -562,6 +604,9 @@ export default function LiveTranslatorPage() {
           onSelectProfile={selectProfile}
           onClearHistory={clearHistory}
           historyCount={history?.length ?? 0}
+          providerHealth={providerHealth}
+          onRequestProviderHealth={requestProviderHealth}
+          onReloadProviders={reloadProviders}
         />
       )}
 
@@ -593,6 +638,19 @@ export default function LiveTranslatorPage() {
 
       {/* Keyboard shortcut cheat-sheet (? key / header button) */}
       <ShortcutsOverlay open={showShortcuts} onClose={() => setShowShortcuts(false)} />
+
+      {/* Unknown-speaker enrollment dialog (spec v2 §6/§7/§11) — keyed so each
+          identification starts from a fresh mount (name input reset, etc.). */}
+      <IdentifySpeakerDialog
+        key={`${identify?.clusterKey ?? 'none'}-${identify ? 'open' : 'closed'}`}
+        open={Boolean(identify)}
+        clusterKey={identify?.clusterKey ?? ''}
+        phase={identify?.phase ?? 'loading'}
+        sample={identify?.sample}
+        error={identify?.error}
+        onConfirm={confirmIdentify}
+        onCancel={cancelIdentify}
+      />
     </AppShell>
   )
 }

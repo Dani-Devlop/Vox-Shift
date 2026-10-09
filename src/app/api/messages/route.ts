@@ -80,6 +80,22 @@ export async function POST(req: NextRequest) {
         historyEntryId:
           typeof body.historyEntryId === 'string' && ID_RE.test(body.historyEntryId) ? body.historyEntryId : null,
         processingStatus: body.processingStatus === 'failed' ? 'failed' : 'complete',
+        // Speaker recognition fields (master prompt v2 §12/§28) — the stable
+        // cluster id keeps transcript attribution consistent across reloads.
+        speakerKey:
+          typeof body.speakerKey === 'string' && /^spk_\d{1,6}$/.test(body.speakerKey) ? body.speakerKey : null,
+        speakerContactId:
+          typeof body.speakerContactId === 'string' && ID_RE.test(body.speakerContactId) ? body.speakerContactId : null,
+        speakerName: typeof body.speakerName === 'string' ? body.speakerName.slice(0, 80) : null,
+        identificationStatus:
+          typeof body.identificationStatus === 'string' &&
+          ['verified', 'possible', 'unknown', 'context'].includes(body.identificationStatus)
+            ? body.identificationStatus
+            : null,
+        speakerConfidence:
+          typeof body.speakerConfidence === 'number' && Number.isFinite(body.speakerConfidence)
+            ? Math.max(0, Math.min(1, body.speakerConfidence))
+            : null,
       },
       select: { id: true, sequenceNo: true, createdAt: true },
     })

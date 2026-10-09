@@ -461,8 +461,19 @@ function ThreadMessageRow({
             }`}
           >
             {isUser ? <Mic className="h-3 w-3" aria-hidden /> : <Users className="h-3 w-3" aria-hidden />}
-            {isUser ? 'You' : 'Other side'}
+            {/* Persisted speaker attribution (v2 §28): recognized name when known. */}
+            {m.speakerName ? m.speakerName : isUser ? 'You' : 'Other side'}
           </span>
+          {m.identificationStatus === 'unknown' && (
+            <span className="rounded-full border border-amber-800/50 bg-amber-950/30 px-1.5 py-0.5 text-[9px] font-bold text-amber-300">
+              Unknown
+            </span>
+          )}
+          {m.identificationStatus === 'verified' && m.speakerConfidence != null && (
+            <span className="rounded-full border border-emerald-900/50 bg-emerald-950/30 px-1.5 py-0.5 text-[9px] font-bold text-emerald-300">
+              {Math.round(m.speakerConfidence * 100)}%
+            </span>
+          )}
           <span className="text-zinc-600">·</span>
           <span className="text-zinc-500">
             {srcMeta.flag} {srcMeta.name}

@@ -20,6 +20,8 @@ model User {
   conversations Conversation[]
   voiceProfiles VoiceProfile[]
   historyEntries HistoryEntry[]
+  voiceContacts VoiceContact[]
+  providerConfigs UserProviderConfig[]
 
   @@index([lastSeenAt])
 }
@@ -127,6 +129,7 @@ model Conversation {
   lastActivityAt DateTime @default(now())
   sessions       ConversationSession[]
   messages       Message[]
+  speakers       ConversationSpeaker[]
 
   @@index([userId, lastActivityAt])
 }
@@ -166,8 +169,109 @@ model Message {
   historyEntryId   String?
   /// complete | failed
   processingStatus String              @default("complete")
+  /// Speaker recognition attribution (master prompt v2 §12/§28) — stable
+  /// temporary cluster id + resolved display name + honest status/confidence.
+  speakerKey          String?
+  speakerContactId    String?
+  speakerName         String?
+  identificationStatus String?
+  speakerConfidence   Float?
   createdAt        DateTime            @default(now())
 
   @@index([conversationId, sequenceNo])
   @@index([sessionId])
+}
+
+// ── Voice Contacts (persistent speaker recognition, master prompt v2) ───────
+// A Voice Contact is a NAMED person the system can recognize again by voice.
+// Recognition is LOCAL-FIRST: a voiceprint (pitch + spectral-timbre vector)
+// is computed on-device/server from reference audio and matched by cosine
+// similarity — no cloud, no vendor lock-in. HONESTY: this is a lightweight
+// spectral voiceprint, not a deep x-vector model — great at telling different
+// people apart, weaker for near-identical voices. The UI discloses this.
+model VoiceContact {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String
+  language         String? // primary spoken language of the sample
+  /// Voiceprint vector (JSON float array, dim = vectorDim), L2-normalized.
+  embeddingJson    String
+  vectorDim        Int
+  /// Reference audio kept on disk (db/audio/contacts/{id}.wav) for playback
+  /// and re-enrollment. Nullable only for legacy/failed rows.
+  referenceAudio   String?
+  sampleDuration   Float     @default(0) // seconds of usable speech kept
+  /// Enrollment quality metrics JSON { meanF0, snrDb, speechSec, frames }.
+  qualityJson      String?
+  /// Per-contact recognition threshold (cosine similarity 0.5..0.99).
+  confidenceThreshold Float  @default(0.9)
+  /// Recognition statistics (honest, measured — never invented).
+  matchCount       Int       @default(0)
+  lastMatchConfidence Float?
+  lastMatchAt      DateTime?
+  /// Temporarily disable recognition without deleting the profile.
+  disabled         Boolean   @default(false)
+  /// Explicit user consent timestamp (enrollment requires consent).
+  consentAt        DateTime?
+  /// Optional link to a VoiceProfile (clone) — future: speak AS this person.
+  voiceProfileId   String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([userId, updatedAt])
+}
+
+// ── User-provided API providers (master prompt v2 §24) ──────────────────────
+// Users can register their own provider endpoints (OpenAI-compatible base
+// URLs) for ASR / Translation / TTS. Keys are ENCRYPTED AT REST with
+// AES-256-GCM and NEVER returned to the frontend (masked hint only) and NEVER
+// logged. Priority orders the failover chain (lower = tried first); the
+// built-in z-ai engines stay as the final fallback.
+model UserProviderConfig {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// asr | translate | tts
+  category  String
+  /// openai-compatible (extensible)
+  kind      String   @default("openai-compatible")
+  name      String
+  baseUrl   String
+  model     String?
+  voiceId   String?
+  /// AES-256-GCM ciphertext "iv:tag:data" hex — plaintext never stored.
+  encKey    String?
+  /// Last 4 chars of the key for UI identification. Never the key itself.
+  keyHint   String?
+  priority  Int      @default(50)
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, category, priority])
+}
+
+// ── Per-conversation speaker registry (stable temporary IDs) ────────────────
+// Maps a session cluster key (spk_001…) to a name/contact so unknown speakers
+// keep the SAME temporary ID within a conversation and identified labels
+// survive app restarts. speakerId clusters are conversation-scoped on purpose.
+model ConversationSpeaker {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  /// Stable temporary speaker id within the conversation, e.g. "spk_001".
+  clusterKey     String
+  /// VoiceContact assigned by the user (null while unknown).
+  contactId      String?
+  /// Display name (contact name, user correction, or "Unknown 1").
+  displayName    String?
+  /// Last known voiceprint for this speaker (JSON float array) — seeds
+  /// recognition when the conversation is reopened.
+  embeddingJson  String?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([conversationId, clusterKey])
+  @@index([conversationId])
 }

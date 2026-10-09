@@ -30,7 +30,7 @@ export interface ConversationData {
   lastActivityAt: string
 }
 
-/** One persisted message inside a thread (spec §5.4). */
+/** One persisted message inside a thread (spec §5.4 + v2 §28 speaker fields). */
 export interface ThreadMessageData {
   id: string
   sessionId: string | null
@@ -45,6 +45,11 @@ export interface ThreadMessageData {
   timings?: { asrMs: number; translateMs: number; ttsMs: number; totalMs: number } | null
   historyEntryId: string | null
   processingStatus: string
+  speakerKey?: string | null
+  speakerContactId?: string | null
+  speakerName?: string | null
+  identificationStatus?: string | null
+  speakerConfidence?: number | null
   createdAt: string
 }
 
@@ -61,6 +66,8 @@ export interface ThreadDetailData {
   }
   sessions: { id: string; status: string; startedAt: string; endedAt: string | null }[]
   messages: ThreadMessageData[]
+  /** Persisted speaker registry — stable ids across app restarts (v2 §12). */
+  speakers?: { clusterKey: string; contactId: string | null; displayName: string | null; vector: number[] | null }[]
 }
 
 /** UI customization preferences (server-persisted, spec §4.4). */
@@ -130,6 +137,84 @@ export function langPairFlags(pair: LangPair): string {
 
 export type PipelineStage = 'asr' | 'translate' | 'tts'
 
+// ── Speaker recognition (master prompt v2) ──────────────────────────────
+
+export type IdentificationStatus = 'verified' | 'possible' | 'unknown' | 'context'
+
+export interface SpeakerCandidate {
+  contactId: string
+  name: string
+  score: number
+}
+
+export interface SpeakerInfo {
+  clusterKey: string
+  contactId?: string
+  name?: string
+  status: IdentificationStatus
+  confidence?: number
+  candidates?: SpeakerCandidate[]
+}
+
+/** Actual providers used per pipeline stage (diagnostics §31). */
+export interface UsedProviders {
+  asr: string
+  translate: string
+  tts: string
+}
+
+/** A persisted Voice Contact (recognized person). */
+export interface VoiceContactData {
+  id: string
+  name: string
+  language: string | null
+  /** Voiceprint vector (relayed to the LOCAL recognizer via contacts:sync). */
+  vector: number[] | null
+  vectorDim: number
+  sampleDuration: number
+  quality: { meanF0?: number; snrDb?: number; speechSec?: number; f0Std?: number } | null
+  confidenceThreshold: number
+  matchCount: number
+  lastMatchConfidence: number | null
+  lastMatchAt: string | null
+  disabled: boolean
+  consentAt: string | null
+  voiceProfileId: string | null
+  createdAt: string
+  updatedAt: string
+  hasReferenceAudio: boolean
+}
+
+/** A user-registered API provider (keys are NEVER sent to the client). */
+export interface UserProviderData {
+  id: string
+  category: 'asr' | 'translate' | 'tts'
+  kind: string
+  name: string
+  baseUrl: string
+  model: string | null
+  voiceId: string | null
+  hasKey: boolean
+  keyHint: string | null
+  priority: number
+  enabled: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ProviderHealthData {
+  providerId: string
+  name: string
+  category: string
+  kind: string
+  enabled: boolean
+  state: string
+  lastError?: string
+  lastCheckedAt?: string
+  consecutiveFailures: number
+  cooldownUntil?: string
+}
+
 export interface StageEvent {
   utteranceId: string
   stage: PipelineStage
@@ -151,6 +236,7 @@ export interface TranslationEvent {
   targetLang: string
   voice: string
   speakerRole?: SpeakerRole
+  speaker?: SpeakerInfo
 }
 
 /** Manual speaker-turn label for two-person conversations. The ASR engine
@@ -174,6 +260,10 @@ export interface UtteranceResult {
   detectedLang?: string
   /** Echoed speaker turn label ('A' default). */
   speakerRole?: SpeakerRole
+  /** Speaker recognition result (local voiceprint — never a guess). */
+  speaker?: SpeakerInfo
+  /** Actual providers used per stage (recorded, never faked). */
+  providers?: UsedProviders
   timings: {
     asrMs: number
     translateMs: number

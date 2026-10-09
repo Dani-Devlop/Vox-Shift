@@ -1,4 +1,4 @@
-# VoxShift v1.1.0 — Real-time Voice Translation with Voice Identity
+# VoxShift v2.2.0 — Voice Translation with Voice Identity & Voice Contacts
 
 **Live demo (GitHub Pages, static UI):** <https://dani-devlop.github.io/Vox-Shift/>
 
@@ -29,6 +29,21 @@ Türkçe and Italiano are supported on the non-Persian side.
   delete (deletes the provider clone too), per-thread voice selection.
 - **Five translation styles** — Natural (default), Clean, Literal, Formal,
   Casual — with optional conversation context.
+- **Voice Contacts & automatic speaker recognition (v2)** — a local DSP
+  voiceprint (pitch register + spectral timbre) recognizes who is speaking:
+  enrolled contacts are named automatically, unknown voices get STABLE
+  temporary labels (Unknown 1, Unknown 2…) and are never guessed. Identify an
+  unknown speaker once — the engine assembles their ~10 s of captured speech,
+  you verify the sample and save the name — and every future session greets
+  them by name. Manage contacts in a dedicated view (re-enroll, pause
+  recognition, playback, measured stats). Unknown is better than wrong.
+- **Multi-provider routing with automatic failover (v2)** — register your own
+  OpenAI-compatible endpoints (ASR / translation / TTS) in Settings; they are
+  tried first (priority order) with real failover to the built-in engines, and
+  every result records the actual provider used. Keys are AES-256-GCM
+  encrypted at rest and never leave the server. Live provider health states
+  (READY / RATE_LIMITED / INVALID_KEY / OFFLINE / COOLDOWN) with exponential
+  cooldowns.
 - **Sessions** — persistent, resumable conversations (threads → sessions →
   messages) with server-side search, plus a saved-phrase archive with search,
   star/filter, export and replay.
@@ -72,6 +87,7 @@ browser**. Missing credentials are reported honestly in About · Diagnostics →
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | SQLite file for profiles, threads, history (e.g. `file:/home/z/my-project/db/custom.db`) |
+| `APP_SECRET` | optional | Extra entropy for encrypting user-provided provider API keys (a machine secret is auto-generated in `db/.provider-secret` regardless) |
 | `ELEVENLABS_API_KEY` | optional | Enables REAL cross-language voice cloning (ElevenLabs IVC). Without it the app runs in honest pitch-conformed voice-match mode and every surface explains how to enable cloning |
 | `TRANSLATOR_SERVICE_URL` | optional | Realtime service probe target for the self-test (default `http://127.0.0.1:3003`) |
 

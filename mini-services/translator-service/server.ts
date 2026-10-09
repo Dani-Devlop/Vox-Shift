@@ -3,10 +3,18 @@ import { Server } from 'socket.io'
 import type { StageEvent as PipelineStageEvent, TextTranslateRequest, TranslationEvent as PipelineTranslationEvent, UtteranceError as PipelineError, UtteranceRequest, UtteranceResult as PipelineResult } from './types'
 import { DEFAULTS } from './types'
 import { processAsrPartial, processTextTranslate, processUtterance, clearSession, type PipelineHandlers } from './pipeline'
+import { SpeakerTracker, type TrackedContact } from './engines/speaker-tracker'
+import { invalidateProviderCache, providerHealthSnapshot } from './providers/router'
+import { pcmToWav } from './engines/audio-utils'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Realtime transport — socket.io gateway for the live translator pipeline.
 // NOTE: path MUST stay '/' (Caddy gateway forwards ?XTransformPort=3003 here).
+//
+// v2 additions (master prompt): per-session SpeakerTracker (contacts sync,
+// unknown-speaker enrollment sample assembly, labeling/corrections) and the
+// provider health channel (§30). Speaker identity is computed SERVER-SIDE
+// from a local voiceprint — never guessed, never fabricated.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Sanitize the manual speaker-turn label ('A' default). */
@@ -20,14 +28,44 @@ const io = new Server(httpServer, {
   cors: { origin: '*', methods: ['GET', 'POST'] },
   pingTimeout: 60000,
   pingInterval: 25000,
-  maxHttpBufferSize: 8e6, // utterance PCM can be a few MB
+  maxHttpBufferSize: 12e6, // utterance PCM + enrollment samples can be several MB
 })
 
 /** Max queued utterances per socket (protects memory, keeps playback order). */
 const MAX_QUEUE = 4
 
+/** Sanitize a client-synced contact list (defense in depth). */
+function sanitizeContacts(raw: unknown): TrackedContact[] {
+  if (!Array.isArray(raw)) return []
+  const out: TrackedContact[] = []
+  for (const c of raw.slice(0, 200)) {
+    if (!c || typeof c !== 'object') continue
+    const o = c as Record<string, unknown>
+    if (typeof o.contactId !== 'string' || typeof o.name !== 'string') continue
+    if (!Array.isArray(o.vector) || o.vector.length === 0 || o.vector.length > 256) continue
+    const vector: number[] = []
+    for (const v of o.vector.slice(0, 256)) {
+      const n = typeof v === 'number' ? v : Number(v)
+      if (!Number.isFinite(n)) { vector.length = 0; break }
+      vector.push(n)
+    }
+    if (vector.length === 0) continue
+    out.push({
+      contactId: o.contactId.slice(0, 64),
+      name: o.name.slice(0, 80),
+      vector,
+      threshold: typeof o.threshold === 'number' && o.threshold >= 0.5 && o.threshold <= 0.99 ? o.threshold : undefined,
+      disabled: o.disabled === true,
+    })
+  }
+  return out
+}
+
 io.on('connection', (socket) => {
   console.log(`[translator] client connected: ${socket.id}`)
+
+  /** Per-socket speaker tracker (real-time recognition + enrollment audio). */
+  const tracker = new SpeakerTracker()
 
   /** FIFO queue per socket so playback order matches speech order. */
   const queue: Array<{ kind: 'audio'; req: UtteranceRequest } | { kind: 'text'; req: TextTranslateRequest }> = []
@@ -52,7 +90,7 @@ io.on('connection', (socket) => {
       },
     }
     const processor =
-      item.kind === 'audio' ? processUtterance(item.req, handlers) : processTextTranslate(item.req, handlers)
+      item.kind === 'audio' ? processUtterance(item.req, handlers, tracker) : processTextTranslate(item.req, handlers)
     processor.catch((err) => {
       console.error(`[translator] pipeline crash: ${err}`)
       socket.emit('utterance:error', {
@@ -112,6 +150,110 @@ io.on('connection', (socket) => {
   socket.on('session:reset', () => {
     clearSession(socket.id)
     socket.emit('session:reset-ok')
+  })
+
+  // ── v2: speaker recognition protocol ─────────────────────────────────────
+
+  /** Client announces its user id (non-secret cookie id) + syncs contacts. */
+  socket.on('session:init', (data: { userId?: string; contacts?: unknown }) => {
+    if (data?.contacts !== undefined) tracker.setContacts(sanitizeContacts(data.contacts))
+    socket.emit('session:init-ok', { speakers: tracker.snapshot() })
+  })
+
+  /** Full contact-list sync (after create/rename/delete/enable). */
+  socket.on('contacts:sync', (data: { contacts?: unknown }) => {
+    tracker.setContacts(sanitizeContacts(data?.contacts))
+    socket.emit('contacts:sync-ok', { count: tracker.getContactsSnapshot().length })
+  })
+
+  /** New conversation → fresh speaker registry. */
+  socket.on('speakers:reset', () => {
+    tracker.reset()
+    socket.emit('speakers:reset-ok')
+  })
+
+  /** Thread reopen → seed prior speaker clusters so ids stay stable. */
+  socket.on('speakers:seed', (data: { clusters?: Array<{ clusterKey?: string; contactId?: string | null; name?: string | null; vector?: unknown }> }) => {
+    const clusters = (data?.clusters ?? [])
+      .filter((c) => c && typeof c.clusterKey === 'string')
+      .slice(0, 50)
+      .map((c) => ({
+        clusterKey: String(c.clusterKey).slice(0, 24),
+        contactId: typeof c.contactId === 'string' ? c.contactId.slice(0, 64) : null,
+        name: typeof c.name === 'string' ? c.name.slice(0, 80) : null,
+        vector: Array.isArray(c.vector) && c.vector.every((v) => Number.isFinite(Number(v))) ? (c.vector as number[]).map(Number) : null,
+      }))
+    tracker.seed(clusters)
+    socket.emit('speakers:seed-ok', { count: clusters.length })
+  })
+
+  /** User identifies / corrects a speaker (spec §11/§18). */
+  socket.on('speakers:label', (data: { clusterKey?: string; contactId?: string | null; name?: string | null; vector?: unknown }) => {
+    if (!data?.clusterKey) return
+    const vector =
+      Array.isArray(data.vector) && data.vector.length > 0 && data.vector.every((v) => Number.isFinite(Number(v)))
+        ? (data.vector as number[]).map(Number)
+        : undefined
+    const info = tracker.label(String(data.clusterKey).slice(0, 24), {
+      contactId: data.contactId === undefined ? undefined : typeof data.contactId === 'string' ? data.contactId.slice(0, 64) : null,
+      name: typeof data.name === 'string' ? data.name.slice(0, 80) : undefined,
+      vector,
+    })
+    socket.emit('speakers:labeled', info ?? { clusterKey: data.clusterKey })
+  })
+
+  /** Assemble the enrollment sample for an unknown speaker (spec §6/§7). */
+  socket.on('speakers:identify', (data: { clusterKey?: string }) => {
+    const clusterKey = String(data?.clusterKey ?? '').slice(0, 24)
+    if (!clusterKey) return
+    try {
+      const sample = tracker.enrollmentSample(clusterKey)
+      if (!sample) {
+        socket.emit('speakers:sample:error', {
+          clusterKey,
+          message:
+            'Not enough usable speech collected yet for this speaker (need ~10 s; short replies do not count). Keep them talking a little more, then try again.',
+        })
+        return
+      }
+      const wav = pcmToWav(sample.wavPcm, sample.sampleRate)
+      socket.emit('speakers:sample', {
+        clusterKey,
+        wavBase64: wav.toString('base64'),
+        sampleRate: sample.sampleRate,
+        durationSec: Number((sample.wavPcm.length / 2 / sample.sampleRate).toFixed(2)),
+        speechSec: sample.speechSec,
+      })
+    } catch (err) {
+      socket.emit('speakers:sample:error', {
+        clusterKey,
+        message: err instanceof Error ? err.message : 'Could not assemble the voice sample',
+      })
+    }
+  })
+
+  /** Drop stored enrollment audio for a cluster (privacy control). */
+  socket.on('speakers:discard-sample', (data: { clusterKey?: string }) => {
+    if (data?.clusterKey) tracker.clearSegments(String(data.clusterKey).slice(0, 24))
+  })
+
+  // ── v2: provider health channel (§30) ────────────────────────────────────
+
+  socket.on('providers:health', () => {
+    providerHealthSnapshot()
+      .then((providers) => socket.emit('providers:health', { providers, updatedAt: new Date().toISOString() }))
+      .catch(() =>
+        socket.emit('providers:health', {
+          providers: [],
+          updatedAt: new Date().toISOString(),
+          error: 'health snapshot unavailable',
+        })
+      )
+  })
+
+  socket.on('providers:reload', () => {
+    invalidateProviderCache()
+    socket.emit('providers:reload-ok')
   })
 
   // Live captions: mid-speech ASR snapshots, OUTSIDE the FIFO (never queues,

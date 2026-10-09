@@ -8,14 +8,15 @@
 // The active view syncs to the URL hash (#/sessions) so reloads restore it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { Activity, AudioWaveform, Languages, MessagesSquare, Settings } from 'lucide-react'
+import { Activity, AudioWaveform, Languages, MessagesSquare, Settings, UsersRound } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export type AppView = 'translate' | 'sessions' | 'voice' | 'settings' | 'about'
+export type AppView = 'translate' | 'sessions' | 'contacts' | 'voice' | 'settings' | 'about'
 
 export const APP_VIEWS: { id: AppView; label: string; short: string; icon: typeof Languages }[] = [
   { id: 'translate', label: 'Translate', short: 'Talk', icon: Languages },
   { id: 'sessions', label: 'Sessions', short: 'History', icon: MessagesSquare },
+  { id: 'contacts', label: 'Voice Contacts', short: 'Contacts', icon: UsersRound },
   { id: 'voice', label: 'Voice Identity', short: 'Voice', icon: AudioWaveform },
   { id: 'settings', label: 'Settings', short: 'Setup', icon: Settings },
   { id: 'about', label: 'About · Diagnostics', short: 'Info', icon: Activity },
@@ -91,7 +92,7 @@ export function AppShell({ view, onViewChange, header, children, footer }: AppSh
         aria-label="Primary"
         className="fixed inset-x-0 bottom-0 z-40 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur lg:hidden"
       >
-        <div className="mx-auto grid max-w-md grid-cols-5 px-1 pb-[max(0.375rem,env(safe-area-inset-bottom))] pt-1.5">
+        <div className="mx-auto grid max-w-md grid-cols-6 px-1 pb-[max(0.375rem,env(safe-area-inset-bottom))] pt-1.5">
           {APP_VIEWS.map(({ id, short, icon: Icon }) => {
             const active = view === id
             return (
@@ -101,7 +102,7 @@ export function AppShell({ view, onViewChange, header, children, footer }: AppSh
                 onClick={() => onViewChange(id)}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-lg px-1 py-1 text-[10px] font-semibold transition-colors',
+                  'relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 py-1 text-[9px] font-semibold transition-colors',
                   active ? 'text-emerald-300' : 'text-zinc-500 active:text-zinc-300'
                 )}
               >
