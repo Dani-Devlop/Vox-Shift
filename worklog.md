@@ -811,3 +811,21 @@ Stage Summary:
 - Local main rebuilt as: c98458f (v2.2.0, GitHub) → recovery commit "v3.1.0 (recovered)" carrying ALL post-v2.2.0 work: v3.0.0 speaker/LOCAL-runtimes, v3.1.0 LLM/Ollama translation + supervisor API + keyless tests, voxshift-ml/ ML-stack docs + setup_ml_stack.sh + Railway SSH tools (railway_ssh_poll.py, rssh.py).
 - HONEST NOTE: original granular Oct 9 commits (ff1082c/dcf5a11/7c3763c/d283364/a95cf97/9b71f1d/3fbffa6) are unrecoverable as commits (git objects wiped by the rollback); only their combined tree state was recovered from /tmp. GitHub history stays clean (orphan rebuild → v2.2.0 → recovery commit).
 - Token (classic PAT, repo+workflow) verified via API (HTTP 200) and used transiently only; never written to disk/config/remote-URL; recommend revoking after this push and switching to a fine-grained token scoped to Dani-Devlop/Vox-Shift only.
+
+---
+Task ID: GH-PUSH-4 (push success)
+Agent: main (Z.ai Code)
+Task: Execute GitHub push with user token and verify end-to-end
+
+Work Log:
+- credential.helper approach failed ("could not read Username" — helper never supplied creds; root cause unresolved); curl proved the token valid at git-receive-pack level (HTTP 200) → switched to transient GIT_ASKPASS script (umask 077, deleted immediately after; token never persisted to any file/config).
+- PUSH SUCCESS: c98458f..f5d790e main -> main (recovery commit + worklog now on GitHub).
+- Verified: git ls-remote origin main == local HEAD == f5d790e.
+- GitHub Pages "Deploy static demo" workflow auto-triggered on push (run 37993281714, in_progress at check time).
+- Platform artifacts .initial_snapshot.json/.pending_clone.json committed? NO — gitignored in recovery commit.
+
+Stage Summary:
+- GitHub Dani-Devlop/Vox-Shift main = f5d790e: v2.2.0 clean history + recovery commit (v3.0.0+v3.1.0 features, voxshift-ml/ ML-stack docs, Railway SSH tools) + worklog.
+- Pages redeploy in progress → live demo will refresh to the recovered v3.1 UI (static shell only, backend stays local by design).
+- Security recommendations to user: revoke this classic PAT after use (it was shared in chat and has repo-wide scope); prefer fine-grained token limited to Vox-Shift with Contents:RW.
+- Next: restart local dev server on recovered tree (v1.0-era process still serving stale code/db), bun lint, verify / route renders.
