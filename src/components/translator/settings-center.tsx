@@ -11,8 +11,9 @@
 
 import { useEffect, useState } from 'react'
 import {
-  AudioWaveform, Check, Database, KeyRound, Languages, PlugZap, RotateCcw, ShieldCheck, Sparkles,
+  Activity, AudioWaveform, Check, Database, KeyRound, Languages, PlugZap, RotateCcw, Route, ShieldCheck, Sparkles,
 } from 'lucide-react'
+import type { RealtimeEvent } from '@/types/translator'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -77,6 +78,10 @@ export interface SettingsCenterProps {
   providerHealth?: { providerId: string; name: string; category: string; state: string; lastError?: string; consecutiveFailures: number }[] | null
   onRequestProviderHealth?: () => void
   onReloadProviders?: () => void
+  /** v3 §25: provider routing policy + §27 realtime event feed. */
+  routingPolicy?: string
+  onRoutingPolicyChange?: (policy: string) => void
+  realtimeEvents?: RealtimeEvent[]
 }
 
 export function SettingsCenter(p: SettingsCenterProps) {
@@ -471,6 +476,50 @@ export function SettingsCenter(p: SettingsCenterProps) {
           onRequestHealth={p.onRequestProviderHealth}
           onReload={p.onReloadProviders}
         />
+
+        {/* ── v3 §25: routing policy — real, applies to the very next call ── */}
+        <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+          <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-zinc-300">
+            <Route className="h-3.5 w-3.5 text-teal-400" aria-hidden /> Routing policy
+          </p>
+          <Select value={p.routingPolicy ?? 'failover'} onValueChange={(v) => p.onRoutingPolicyChange?.(v)}>
+            <SelectTrigger className="h-9 border-zinc-800 bg-zinc-900 text-sm focus-visible:ring-emerald-500/60">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="border-zinc-800 bg-zinc-900">
+              {ROUTING_POLICIES.map((pol) => (
+                <SelectItem key={pol.id} value={pol.id} className="text-xs">
+                  {pol.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-zinc-500">
+            Every attempt is real and recorded — the result carries the provider that actually served each stage, and
+            failures broadcast <code className="rounded bg-zinc-800 px-1 font-mono text-[10px]">provider.failed</code> /{' '}
+            <code className="rounded bg-zinc-800 px-1 font-mono text-[10px]">provider.fallback</code> events live.
+          </p>
+        </div>
+
+        {/* ── v3 §27: live realtime event feed (real backend events only) ── */}
+        {p.realtimeEvents && p.realtimeEvents.length > 0 && (
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+            <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-semibold text-zinc-300">
+              <Activity className="h-3.5 w-3.5 text-emerald-400" aria-hidden /> Realtime events (latest first)
+            </p>
+            <ul className="max-h-44 space-y-1 overflow-y-auto pr-1">
+              {p.realtimeEvents.map((e) => (
+                <li key={e.id} className="flex items-baseline justify-between gap-2 rounded border border-zinc-800/70 bg-zinc-950/50 px-2 py-1">
+                  <span className="font-mono text-[10px] text-emerald-300">{e.type}</span>
+                  <span className="min-w-0 flex-1 truncate text-right text-[10px] text-zinc-500">{e.detail ?? ''}</span>
+                  <span className="shrink-0 font-mono text-[9px] text-zinc-600">
+                    {new Date(e.at).toLocaleTimeString([], { hour12: false })}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </SettingsSection>
 
       {/* ── Reset (spec §6.6) ─────────────────────────────────────────────── */}
@@ -584,17 +633,38 @@ function ProviderChip({ label, engine, configured }: { label: string; engine?: s
 
 const PROVIDER_CATEGORIES = [
   { id: 'asr', label: 'ASR (speech-to-text)', endpoint: '/audio/transcriptions', model: 'whisper-1' },
-  { id: 'translate', label: 'Translation (LLM)', endpoint: '/chat/completions', model: 'gpt-4o-mini' },
+  { id: 'translate', label: 'Translation (chat)', endpoint: '/chat/completions', model: 'gpt-4o-mini' },
+  { id: 'llm', label: 'LLM / reasoning', endpoint: '/chat/completions', model: 'qwen2.5:3b-instruct' },
   { id: 'tts', label: 'TTS (speech synthesis)', endpoint: '/audio/speech', model: 'tts-1' },
+] as const
+
+/** Provider classes (v3 §15) — LOCAL runtimes are auto-detected, not added. */
+const PROVIDER_CLASSES = [
+  { id: 'server', label: 'Server (self-hosted)', hint: 'Your own machine/VPS — e.g. Ollama, vLLM, whisper.cpp server' },
+  { id: 'cloud', label: 'Cloud/API', hint: 'A hosted API with a key' },
+  { id: 'custom', label: 'Custom', hint: 'Anything OpenAI-compatible' },
+] as const
+
+const ROUTING_POLICIES = [
+  { id: 'auto', label: 'AUTO — smart default (quality-lean)' },
+  { id: 'local_first', label: 'LOCAL_FIRST — on-machine runtimes first' },
+  { id: 'server_first', label: 'SERVER_FIRST — self-hosted endpoints first' },
+  { id: 'quality_first', label: 'QUALITY_FIRST — built-in cloud first' },
+  { id: 'low_cost', label: 'LOW_COST — free/local before paid' },
+  { id: 'privacy_first', label: 'PRIVACY_FIRST — never leaves the machine (no cloud fallback)' },
+  { id: 'manual', label: 'MANUAL — only your first registered provider' },
+  { id: 'failover', label: 'FAILOVER — registered → built-in → local' },
 ] as const
 
 interface ProviderRowMasked {
   id: string
   category: string
+  class?: string
   name: string
   baseUrl: string
   model: string | null
   voiceId: string | null
+  headerCount?: number
   hasKey: boolean
   keyHint: string | null
   priority: number
@@ -612,12 +682,14 @@ function CustomProvidersCard({
 }) {
   const [rows, setRows] = useState<ProviderRowMasked[] | null>(null)
   const [formOpen, setFormOpen] = useState(false)
-  const [category, setCategory] = useState<'asr' | 'translate' | 'tts'>('translate')
+  const [category, setCategory] = useState<'asr' | 'translate' | 'llm' | 'tts'>('translate')
+  const [providerClass, setProviderClass] = useState<'server' | 'cloud' | 'custom'>('custom')
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [model, setModel] = useState('')
   const [voiceId, setVoiceId] = useState('')
+  const [headers, setHeaders] = useState('')
   const [busy, setBusy] = useState<string | null>(null)
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
@@ -638,14 +710,23 @@ function CustomProvidersCard({
   const healthOf = (id: string) => health?.find((h) => h.providerId === id)
 
   const create = async () => {
-    if (!name.trim() || !baseUrl.trim() || !apiKey.trim()) return
+    if (!name.trim() || !baseUrl.trim()) return
     setBusy('create')
     setMsg(null)
     try {
       const res = await fetch('/api/providers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ category, name: name.trim(), baseUrl: baseUrl.trim(), apiKey: apiKey.trim(), model: model.trim() || undefined, voiceId: voiceId.trim() || undefined }),
+        body: JSON.stringify({
+          category,
+          class: providerClass,
+          name: name.trim(),
+          baseUrl: baseUrl.trim(),
+          apiKey: apiKey.trim() || undefined,
+          model: model.trim() || undefined,
+          voiceId: voiceId.trim() || undefined,
+          headers: headers.trim() || undefined,
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data?.error ?? 'Request failed')
@@ -654,8 +735,9 @@ function CustomProvidersCard({
       setApiKey('')
       setModel('')
       setVoiceId('')
+      setHeaders('')
       setFormOpen(false)
-      setMsg({ kind: 'ok', text: `“${data.provider.name}” saved — it is now FIRST in the failover chain for ${category}.` })
+      setMsg({ kind: 'ok', text: `“${data.provider.name}” saved — the router orders it by priority and records it on every result.` })
       await load()
       onReload?.()
     } catch (err) {
@@ -756,30 +838,53 @@ function CustomProvidersCard({
             </span>
           </label>
           <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Class (§15)</span>
+            <div className="flex flex-wrap gap-1.5">
+              {PROVIDER_CLASSES.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setProviderClass(c.id)}
+                  title={c.hint}
+                  className={cn(
+                    'rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors',
+                    providerClass === c.id
+                      ? 'border-teal-600/60 bg-teal-950/40 text-teal-300'
+                      : 'border-zinc-800 bg-zinc-900 text-zinc-400 hover:text-zinc-200'
+                  )}
+                >
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          </label>
+          <label className="block">
             <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Display name</span>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My OpenAI" className="h-8 text-xs" />
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="My Ollama server" className="h-8 text-xs" />
           </label>
           <label className="block">
             <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Base URL</span>
-            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.openai.com/v1" className="h-8 text-xs" />
-          </label>
-          <label className="block">
-            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">API key (stored encrypted)</span>
-            <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" className="h-8 text-xs" autoComplete="off" />
+            <Input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://127.0.0.1:11434/v1" className="h-8 text-xs" />
           </label>
           <label className="block">
             <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
-              Model{category === 'tts' ? ' + Voice ID (optional)' : ' (optional)'}
+              API key (stored encrypted — optional for localhost servers)
             </span>
+            <Input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-… (empty for keyless local runtimes)" className="h-8 text-xs" autoComplete="off" />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Model + Voice ID (optional)</span>
             <div className="flex gap-1.5">
               <Input value={model} onChange={(e) => setModel(e.target.value)} placeholder={PROVIDER_CATEGORIES.find((c) => c.id === category)?.model} className="h-8 text-xs" />
-              {category === 'tts' && (
-                <Input value={voiceId} onChange={(e) => setVoiceId(e.target.value)} placeholder="voice" className="h-8 w-24 text-xs" />
-              )}
+              <Input value={voiceId} onChange={(e) => setVoiceId(e.target.value)} placeholder="voice" className="h-8 w-24 text-xs" />
             </div>
           </label>
+          <label className="block sm:col-span-2">
+            <span className="mb-1 block text-[10px] font-semibold uppercase tracking-wide text-zinc-500">Additional headers (JSON — values stay server-side)</span>
+            <Input value={headers} onChange={(e) => setHeaders(e.target.value)} placeholder='{"X-Tenant":"acme","X-Region":"eu"}' className="h-8 font-mono text-xs" autoComplete="off" />
+          </label>
           <div className="sm:col-span-2">
-            <Button size="sm" onClick={() => void create()} disabled={busy === 'create' || !name.trim() || !baseUrl.trim() || !apiKey.trim()} className="h-8 bg-emerald-600 text-xs text-white hover:bg-emerald-500">
+            <Button size="sm" onClick={() => void create()} disabled={busy === 'create' || !name.trim() || !baseUrl.trim()} className="h-8 bg-emerald-600 text-xs text-white hover:bg-emerald-500">
               Save provider
             </Button>
           </div>

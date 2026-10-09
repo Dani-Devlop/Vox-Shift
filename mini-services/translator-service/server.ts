@@ -2,10 +2,11 @@ import { createServer } from 'http'
 import { Server } from 'socket.io'
 import type { StageEvent as PipelineStageEvent, TextTranslateRequest, TranslationEvent as PipelineTranslationEvent, UtteranceError as PipelineError, UtteranceRequest, UtteranceResult as PipelineResult } from './types'
 import { DEFAULTS } from './types'
-import { processAsrPartial, processTextTranslate, processUtterance, clearSession, type PipelineHandlers } from './pipeline'
+import { processAsrPartial, processTextTranslate, processUtterance, clearSession, type PipelineHandlers, type PipelineEvent } from './pipeline'
 import { SpeakerTracker, type TrackedContact } from './engines/speaker-tracker'
-import { invalidateProviderCache, providerHealthSnapshot } from './providers/router'
+import { invalidateProviderCache, providerHealthSnapshot, setRouterEventSink, setRoutingPolicy, getRoutingPolicy, ROUTING_POLICIES } from './providers/router'
 import { pcmToWav } from './engines/audio-utils'
+import type { SpeakerInfo } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Realtime transport — socket.io gateway for the live translator pipeline.
@@ -21,6 +22,12 @@ import { pcmToWav } from './engines/audio-utils'
 function speakerRole(value: unknown): 'A' | 'B' | undefined {
   return value === 'A' || value === 'B' ? value : undefined
 }
+
+// ── Router events (§27) — broadcast to every connected client ───────────────
+// provider.failed / provider.fallback are service-wide facts, not per-socket.
+setRouterEventSink((e) => {
+  io.emit(e.type, e)
+})
 
 const httpServer = createServer()
 const io = new Server(httpServer, {
@@ -67,6 +74,30 @@ io.on('connection', (socket) => {
   /** Per-socket speaker tracker (real-time recognition + enrollment audio). */
   const tracker = new SpeakerTracker()
 
+  /** Last attributed speaker — drives speaker.started/changed events (§27). */
+  let lastSpeaker: SpeakerInfo | null = null
+
+  /** Map a pipeline speaker.info event to the semantic speaker.* events. */
+  const emitSpeakerEvents = (info: SpeakerInfo) => {
+    if (!lastSpeaker || lastSpeaker.clusterKey !== info.clusterKey) {
+      socket.emit(lastSpeaker ? 'speaker.changed' : 'speaker.started', {
+        from: lastSpeaker ? { clusterKey: lastSpeaker.clusterKey, name: lastSpeaker.name ?? null } : null,
+        to: { clusterKey: info.clusterKey, contactId: info.contactId ?? null, name: info.name ?? null, status: info.status },
+      })
+    }
+    if (info.status === 'verified' && info.name) {
+      socket.emit('speaker.recognized', {
+        clusterKey: info.clusterKey,
+        contactId: info.contactId ?? null,
+        name: info.name,
+        confidence: info.confidence ?? null,
+      })
+    } else if (info.status === 'unknown') {
+      socket.emit('speaker.unknown', { clusterKey: info.clusterKey, name: info.name ?? null })
+    }
+    lastSpeaker = info
+  }
+
   /** FIFO queue per socket so playback order matches speech order. */
   const queue: Array<{ kind: 'audio'; req: UtteranceRequest } | { kind: 'text'; req: TextTranslateRequest }> = []
   let busy = false
@@ -78,6 +109,17 @@ io.on('connection', (socket) => {
     const handlers = {
       onStage: (e: PipelineStageEvent) => socket.emit('stage', e),
       onTranslation: (e: PipelineTranslationEvent) => socket.emit('translation', e),
+      onEvent: (e: PipelineEvent) => {
+        // §27 real-time event model — the frontend reacts to THESE, never to
+        // timers or mock data.
+        if (e.type === 'speaker.info' && e.speaker) {
+          emitSpeakerEvents(e.speaker as SpeakerInfo)
+          return
+        }
+        // The remaining pipeline events are forwarded under their own names.
+        const { type, ...payload } = e
+        socket.emit(type, payload)
+      },
       onResult: (r: PipelineResult) => {
         socket.emit('result', r)
         busy = false
@@ -132,7 +174,18 @@ io.on('connection', (socket) => {
         providerSimilarity: typeof data.providerSimilarity === 'number' ? data.providerSimilarity : undefined,
         providerStyle: typeof data.providerStyle === 'number' ? data.providerStyle : undefined,
         speakerRole: speakerRole(data.speakerRole),
+        detectionMode: data.detectionMode === 'manual' ? 'manual' : 'auto',
+        ttsEcho: data.ttsEcho === true,
         autoPair: typeof data.autoPair === 'string' ? data.autoPair.slice(0, 20) : undefined,
+      }
+      // Test 10 (§30): never recognize VoxShift's own TTS as a human speaker.
+      if (req.ttsEcho) {
+        socket.emit('utterance:error', {
+          utteranceId: req.utteranceId,
+          stage: 'queue',
+          message: 'echo-suppressed',
+        })
+        return
       }
       if (queue.length >= MAX_QUEUE) {
         socket.emit('utterance:error', {
@@ -254,6 +307,15 @@ io.on('connection', (socket) => {
   socket.on('providers:reload', () => {
     invalidateProviderCache()
     socket.emit('providers:reload-ok')
+  })
+
+  // ── v3 §25: live routing-policy switch (Settings → Routing policy card).
+  // The policy is service-wide (it shapes every provider chain); the change is
+  // acknowledged with the effective policy so the UI can verify the round trip.
+  socket.on('providers:policy', (data: { policy?: string }) => {
+    const requested = String(data?.policy ?? '')
+    const effective = setRoutingPolicy(requested)
+    socket.emit('providers:policy-ok', { policy: effective, accepted: effective === requested })
   })
 
   // Live captions: mid-speech ASR snapshots, OUTSIDE the FIFO (never queues,

@@ -33,9 +33,16 @@ export interface UtteranceRequest {
   providerStyle?: number
   /** Speaker turn label for two-person interpreter conversations.
    *  'A' = primary speaker, 'B' = second speaker (opposite direction).
-   *  Manual attribution — the ASR engine provides NO diarization; the UI
-   *  must state that honestly. */
+   *  ONLY used in MANUAL detection mode — AUTO mode derives identity from
+   *  the local voiceprint pipeline (server-side diarization). */
   speakerRole?: 'A' | 'B'
+  /** Speaker detection mode (v3 §1/§9): 'auto' (default) ignores speakerRole
+   *  and uses real voiceprint attribution; 'manual' is the A/B fallback. */
+  detectionMode?: 'auto' | 'manual'
+  /** Set by the client when this audio was captured while VoxShift itself was
+   *  playing back TTS — the server REFUSES it so our own voice is never
+   *  recognized as a human speaker (v3 §30 Test 10). */
+  ttsEcho?: boolean
   /** Pair spec for AUTO conversations ('fa,en'): detect source → target is
    *  the OTHER member. Only used when sourceLang/targetLang are 'auto'. */
   autoPair?: string

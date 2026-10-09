@@ -54,3 +54,7 @@ qa-*.png
 .zscripts/
 upload/
 download/
+
+# platform workspace-restore artifacts
+.initial_snapshot.json
+.pending_clone.json

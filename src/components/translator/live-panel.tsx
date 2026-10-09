@@ -2,10 +2,10 @@
 
 import { motion } from 'framer-motion'
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { ArrowLeftRight, AudioLines, Check, CircleAlert, Clock, Copy, Download, Keyboard, Loader2, Maximize2, Mic2, Minimize2, RotateCcw, SendHorizonal, Share2, Square, WandSparkles, X } from 'lucide-react'
+import { ArrowLeftRight, AudioLines, BadgeCheck, Check, CircleAlert, CircleDot, Clock, Copy, Download, Keyboard, Loader2, Maximize2, Mic2, Minimize2, RotateCcw, SendHorizonal, Share2, Square, Users, WandSparkles, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { LiveCaption, TranscriptEntry, TranslationPartial, TranslatorStatus } from '@/hooks/use-translator'
-import type { LangPair, PipelineStage } from '@/types/translator'
+import type { LangPair, PipelineStage, SpeakerCandidate, SpeakerInfo } from '@/types/translator'
 import { LANG_META } from '@/types/translator'
 
 /** The engine voice + speed the pipeline uses when no profile is active. */
@@ -49,12 +49,24 @@ interface LivePanelProps {
   onDismissError?: () => void
   /** UI text-size preference (spec §4.4) — scales the hero text. */
   textScale?: 'sm' | 'md' | 'lg'
-  /** Manual speaker turn for two-person conversations (NO engine diarization —
-   *  the UI labels each turn and the honest hint explains the limitation). */
+  /** Manual speaker turn — used ONLY in MANUAL detection mode (fallback). */
   speaker?: 'A' | 'B'
   onSpeakerChange?: (role: 'A' | 'B') => void
   /** Honest note shown under the speaker control (diarization limitation). */
   speakerNote?: string
+  // ── v3 §9/§28/§31: Speaker Detection card ──────────────────────────────
+  /** 'auto' (default) = real voiceprint attribution; 'manual' = A/B fallback. */
+  detectionMode?: 'auto' | 'manual'
+  onDetectionModeChange?: (mode: 'auto' | 'manual') => void
+  /** Live attribution of the most recent utterance (from the voiceprint). */
+  activeSpeaker?: SpeakerInfo | null
+  /** All speakers seen this session (cluster list, §31 contacts strip). */
+  sessionSpeakers?: SpeakerInfo[]
+  /** Enrolled Voice Contacts (persistent names — §4/§31). */
+  contacts?: Array<{ id: string; name: string; disabled?: boolean }>
+  onStartIdentify?: (clusterKey: string) => void
+  onConfirmCandidate?: (clusterKey: string, contactId: string, contactName: string) => void
+  onKeepUnknown?: (clusterKey: string) => void
 }
 
 const STAGE_LABEL: Record<PipelineStage, string> = {
@@ -78,7 +90,7 @@ const HERO_TGT: Record<'sm' | 'md' | 'lg', string> = {
   lg: 'text-2xl sm:text-3xl',
 }
 
-export function LivePanel({ latest, status, activeStage, langPair, partial, liveCaption, pendingCount = 1, canReplay, onReplay, onDownload, onShare, onTranslateText, onPushToTalk, bigButton, present, onTogglePresent, abProfile = null, abProfileId = null, playbackActive = false, lastError = null, onRetryFailed, onDismissError, textScale = 'md', speaker, onSpeakerChange, speakerNote }: LivePanelProps) {
+export function LivePanel({ latest, status, activeStage, langPair, partial, liveCaption, pendingCount = 1, canReplay, onReplay, onDownload, onShare, onTranslateText, onPushToTalk, bigButton, present, onTogglePresent, abProfile = null, abProfileId = null, playbackActive = false, lastError = null, onRetryFailed, onDismissError, textScale = 'md', speaker, onSpeakerChange, speakerNote, detectionMode = 'auto', onDetectionModeChange, activeSpeaker = null, sessionSpeakers = [], contacts = [], onStartIdentify, onConfirmCandidate, onKeepUnknown }: LivePanelProps) {
   const processing = activeStage !== null
   const [copied, setCopied] = useState(false)
   const [draft, setDraft] = useState('')
@@ -673,36 +685,179 @@ export function LivePanel({ latest, status, activeStage, langPair, partial, live
         </button>
       )}
 
-      {/* Manual speaker turn — two-person conversations. Honest: the ASR engine
-          has NO diarization, so who is speaking is an explicit user action. */}
-      {onSpeakerChange && (
-        <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-2.5">
-          <div className="flex items-center gap-2" role="radiogroup" aria-label="Current speaker">
-            {(['A', 'B'] as const).map((role) => {
-              const active = (speaker ?? 'A') === role
-              return (
-                <button
-                  key={role}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  onClick={() => onSpeakerChange(role)}
-                  className={cn(
-                    'inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border text-xs font-bold uppercase tracking-[0.14em] transition-all',
-                    active
-                      ? 'border-teal-500/70 bg-teal-950/50 text-teal-200 shadow-[0_0_18px_-6px_rgba(45,212,191,0.7)]'
-                      : 'border-zinc-800 bg-zinc-900 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
-                  )}
-                >
-                  <AudioLines className={cn('h-3.5 w-3.5', active && role === 'B' && 'text-teal-300')} aria-hidden />
-                  Speaker {role}
-                  {role === 'A' && <span className="hidden text-[9px] font-medium normal-case tracking-normal text-zinc-500 sm:inline">(your voice)</span>}
-                  {role === 'B' && <span className="hidden text-[9px] font-medium normal-case tracking-normal text-zinc-500 sm:inline">(2nd voice)</span>}
-                </button>
-              )
-            })}
+      {/* ── Speaker Detection (v3 §9/§28/§31) — AUTO is the default mode:
+          identity comes from the local voiceprint pipeline. Manual A/B stays
+          available as a testing fallback. ── */}
+      {(onDetectionModeChange || activeSpeaker) && (
+        <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-zinc-400">
+              <AudioLines className="h-3.5 w-3.5 text-teal-300" aria-hidden />
+              Speaker Detection
+            </div>
+            <div className="flex items-center gap-1" role="radiogroup" aria-label="Speaker detection mode">
+              {(['auto', 'manual'] as const).map((m) => {
+                const active = detectionMode === m
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    onClick={() => onDetectionModeChange?.(m)}
+                    className={cn(
+                      'inline-flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[10px] font-bold uppercase tracking-[0.12em] transition-all',
+                      active
+                        ? 'border-teal-500/70 bg-teal-950/50 text-teal-200 shadow-[0_0_18px_-6px_rgba(45,212,191,0.7)]'
+                        : 'border-zinc-800 bg-zinc-900 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+                    )}
+                  >
+                    <CircleDot className={cn('h-3 w-3', !active && 'opacity-40')} aria-hidden />
+                    {m}
+                  </button>
+                )
+              })}
+            </div>
           </div>
-          <p className="mt-1.5 px-0.5 text-[10px] leading-snug text-zinc-600">{speakerNote ?? 'Speaker detection is not automatic — tap the button when the other person takes a turn. Speaker B is spoken with a distinct voice.'}</p>
+
+          {detectionMode === 'manual' ? (
+            /* Manual fallback: the legacy A/B radios (debug/testing). */
+            <div className="mt-2.5">
+              <div className="flex items-center gap-2" role="radiogroup" aria-label="Current speaker">
+                {(['A', 'B'] as const).map((role) => {
+                  const active = (speaker ?? 'A') === role
+                  return (
+                    <button
+                      key={role}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      onClick={() => onSpeakerChange?.(role)}
+                      className={cn(
+                        'inline-flex h-9 flex-1 items-center justify-center gap-1.5 rounded-lg border text-xs font-bold uppercase tracking-[0.14em] transition-all',
+                        active
+                          ? 'border-teal-500/70 bg-teal-950/50 text-teal-200 shadow-[0_0_18px_-6px_rgba(45,212,191,0.7)]'
+                          : 'border-zinc-800 bg-zinc-900 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300'
+                      )}
+                    >
+                      <AudioLines className={cn('h-3.5 w-3.5', active && role === 'B' && 'text-teal-300')} aria-hidden />
+                      Speaker {role}
+                      {role === 'A' && <span className="hidden text-[9px] font-medium normal-case tracking-normal text-zinc-500 sm:inline">(your voice)</span>}
+                      {role === 'B' && <span className="hidden text-[9px] font-medium normal-case tracking-normal text-zinc-500 sm:inline">(2nd voice)</span>}
+                    </button>
+                  )
+                })}
+              </div>
+              <p className="mt-1.5 px-0.5 text-[10px] leading-snug text-zinc-600">{speakerNote ?? 'Manual attribution fallback for testing — identity is whatever you label it, not recognized.'}</p>
+            </div>
+          ) : (
+            /* AUTO mode: live voiceprint attribution. */
+            <div className="mt-2.5">
+              {activeSpeaker ? (
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="text-base leading-none" aria-hidden>🎤</span>
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-bold text-zinc-100">{activeSpeaker.name ?? activeSpeaker.clusterKey}</div>
+                        <div
+                          className={cn(
+                            'text-[10px] font-semibold uppercase tracking-[0.12em]',
+                            activeSpeaker.status === 'verified'
+                              ? 'text-teal-300'
+                              : activeSpeaker.status === 'possible'
+                                ? 'text-amber-300'
+                                : activeSpeaker.status === 'unknown'
+                                  ? 'text-rose-300'
+                                  : 'text-zinc-500'
+                          )}
+                        >
+                          {activeSpeaker.status === 'verified'
+                            ? 'Recognized'
+                            : activeSpeaker.status === 'possible'
+                              ? 'Possible match'
+                              : activeSpeaker.status === 'unknown'
+                                ? 'Not recognized'
+                                : 'Context'}
+                          {activeSpeaker.confidence != null ? ` — ${Math.round(activeSpeaker.confidence * 100)}%` : ''}
+                        </div>
+                      </div>
+                    </div>
+                    {activeSpeaker.status === 'unknown' && onStartIdentify && (
+                      <button
+                        type="button"
+                        onClick={() => onStartIdentify(activeSpeaker.clusterKey)}
+                        className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-teal-700/60 bg-teal-950/40 px-2.5 text-[11px] font-semibold text-teal-200 transition hover:border-teal-500 hover:bg-teal-900/50"
+                      >
+                        <Users className="h-3.5 w-3.5" aria-hidden />
+                        Identify Person
+                      </button>
+                    )}
+                  </div>
+                  {/* Possible match — never silently chosen (§11). */}
+                  {activeSpeaker.status === 'possible' && activeSpeaker.candidates && activeSpeaker.candidates.length > 0 && (
+                    <div className="mt-2 border-t border-zinc-800 pt-2">
+                      <div className="space-y-1.5">
+                        {activeSpeaker.candidates.slice(0, 3).map((c: SpeakerCandidate) => (
+                          <div key={c.contactId} className="flex items-center justify-between gap-2 text-xs">
+                            <span className="min-w-0 truncate text-zinc-300">
+                              {c.name} <span className="text-zinc-500">{Math.round(c.score * 100)}%</span>
+                            </span>
+                            <span className="flex shrink-0 items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => onConfirmCandidate?.(activeSpeaker.clusterKey, c.contactId, c.name)}
+                                className="inline-flex h-6 items-center rounded border border-teal-700/60 bg-teal-950/40 px-1.5 text-[10px] font-semibold text-teal-200 hover:border-teal-500"
+                              >
+                                <Check className="mr-0.5 h-3 w-3" aria-hidden /> Confirm
+                              </button>
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => onKeepUnknown?.(activeSpeaker.clusterKey)}
+                        className="mt-1.5 text-[10px] font-medium text-zinc-500 underline-offset-2 hover:text-zinc-300 hover:underline"
+                      >
+                        Keep unknown
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed border-zinc-800 bg-zinc-950/40 p-2.5 text-[11px] text-zinc-500">
+                  Listening — the first utterance is attributed automatically from the voiceprint (local DSP).
+                </div>
+              )}
+
+              {/* Session speakers + Voice Contacts strip (§31). */}
+              {(sessionSpeakers.length > 0 || contacts.length > 0) && (
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  {contacts.slice(0, 5).map((c) => (
+                    <span
+                      key={c.id}
+                      className={cn(
+                        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-semibold',
+                        c.disabled ? 'border-zinc-800 bg-zinc-900 text-zinc-600' : 'border-teal-900/60 bg-teal-950/30 text-teal-200'
+                      )}
+                    >
+                      <BadgeCheck className="h-3 w-3" aria-hidden />
+                      {c.name}
+                    </span>
+                  ))}
+                  {sessionSpeakers
+                    .filter((s) => s.status === 'unknown' || s.status === 'possible')
+                    .slice(0, 4)
+                    .map((s) => (
+                      <span key={s.clusterKey} className="inline-flex items-center gap-1 rounded-full border border-zinc-800 bg-zinc-900 px-2 py-0.5 text-[10px] font-semibold text-zinc-400">
+                        🎤 {s.name ?? s.clusterKey}
+                      </span>
+                    ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

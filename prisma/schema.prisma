@@ -232,14 +232,18 @@ model UserProviderConfig {
   id        String   @id @default(cuid())
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  /// asr | translate | tts
+  /// asr | translate | llm | tts
   category  String
   /// openai-compatible (extensible)
   kind      String   @default("openai-compatible")
+  /// Provider class (v3 §15): server | cloud | custom
+  class     String   @default("custom")
   name      String
   baseUrl   String
   model     String?
   voiceId   String?
+  /// Extra HTTP headers (v3 §24) — JSON object; values never returned to UI.
+  headersJson String?
   /// AES-256-GCM ciphertext "iv:tag:data" hex — plaintext never stored.
   encKey    String?
   /// Last 4 chars of the key for UI identification. Never the key itself.

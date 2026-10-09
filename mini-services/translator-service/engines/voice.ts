@@ -104,6 +104,8 @@ export interface IdentitySynthesisOptions {
   providerSimilarity?: number
   /** Provider style exaggeration 0..0.45 (clone mode only). */
   providerStyle?: number
+  /** Target language (drives the LOCAL espeak/piper voice, v3 §22). */
+  lang?: string
 }
 
 /**
@@ -144,8 +146,14 @@ export class VoiceIdentityEngine {
       return { buffer, format: 'wav', providerId: 'elevenlabs-ivc' }
     }
     // 'voice-match' (and any legacy payload without a mode) → multi-provider
-    // preset chain, then pitch-conformed built-in (honest final fallback).
+    // TTS chain with policy ordering (LOCAL/SERVER/CLOUD/CUSTOM, v3 §25):
+    // local espeak/piper → user endpoints → built-in z-ai, per active policy.
     const routed = await routedCall<{ buffer: Buffer; format: 'wav' | 'mp3'; conformed: boolean }>('tts', {
+      local: async () => {
+        const { localTTS } = await import('./local-tts')
+        const out = await localTTS(text, { lang: opts.lang ?? 'en', speed: opts.speed })
+        return { buffer: out.buffer, format: 'wav' as const, conformed: false }
+      },
       user: async (p) => {
         const { bytes, format } = await openAICompatibleTTS(p, text, opts.speed)
         return { buffer: bytes, format, conformed: false }
