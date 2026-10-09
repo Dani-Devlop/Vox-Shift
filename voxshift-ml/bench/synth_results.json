@@ -1,0 +1,122 @@
+{
+  "B0_fa_conv": {
+    "synth_s": 0.013,
+    "dur_s": 6.077,
+    "sr": 22050
+  },
+  "B1_fa_conv": {
+    "synth_s": 2.229,
+    "dur_s": 5.166,
+    "sr": 22050
+  },
+  "B2_fa_conv": {
+    "synth_s": 7.723,
+    "dur_s": 5.166,
+    "sr": 22050
+  },
+  "B0_fa_formal": {
+    "synth_s": 0.014,
+    "dur_s": 7.34,
+    "sr": 22050
+  },
+  "B1_fa_formal": {
+    "synth_s": 2.369,
+    "dur_s": 6.954,
+    "sr": 22050
+  },
+  "B2_fa_formal": {
+    "synth_s": 3.967,
+    "dur_s": 6.954,
+    "sr": 22050
+  },
+  "B0_en_conv": {
+    "synth_s": 0.011,
+    "dur_s": 4.631,
+    "sr": 22050
+  },
+  "B1_en_conv": {
+    "synth_s": 2.012,
+    "dur_s": 5.143,
+    "sr": 22050
+  },
+  "B2_en_conv": {
+    "synth_s": 3.148,
+    "dur_s": 5.143,
+    "sr": 22050
+  },
+  "B0_en_tech": {
+    "synth_s": 0.012,
+    "dur_s": 5.898,
+    "sr": 22050
+  },
+  "B1_en_tech": {
+    "synth_s": 2.142,
+    "dur_s": 6.2,
+    "sr": 22050
+  },
+  "B2_en_tech": {
+    "synth_s": 3.486,
+    "dur_s": 6.2,
+    "sr": 22050
+  },
+  "B0_fa_codeswitch": {
+    "synth_s": 0.034,
+    "dur_s": 5.559,
+    "sr": 22050
+  },
+  "B1_fa_codeswitch": {
+    "synth_s": 2.092,
+    "dur_s": 5.143,
+    "sr": 22050
+  },
+  "B2_fa_codeswitch": {
+    "synth_s": 2.808,
+    "dur_s": 5.143,
+    "sr": 22050
+  },
+  "B0_fa_short": {
+    "synth_s": 0.007,
+    "dur_s": 0.858,
+    "sr": 22050
+  },
+  "B1_fa_short": {
+    "synth_s": 1.83,
+    "dur_s": 0.534,
+    "sr": 22050
+  },
+  "B2_fa_short": {
+    "synth_s": 0.305,
+    "dur_s": 0.534,
+    "sr": 22050
+  },
+  "B0_fa_long": {
+    "synth_s": 0.021,
+    "dur_s": 13.537,
+    "sr": 22050
+  },
+  "B1_fa_long": {
+    "synth_s": 2.734,
+    "dur_s": 11.517,
+    "sr": 22050
+  },
+  "B2_fa_long": {
+    "synth_s": 6.45,
+    "dur_s": 11.517,
+    "sr": 22050
+  },
+  "B0_en_question": {
+    "synth_s": 0.012,
+    "dur_s": 4.99,
+    "sr": 22050
+  },
+  "B1_en_question": {
+    "synth_s": 2.032,
+    "dur_s": 5.468,
+    "sr": 22050
+  },
+  "B2_en_question": {
+    "synth_s": 3.231,
+    "dur_s": 5.468,
+    "sr": 22050
+  }
+}

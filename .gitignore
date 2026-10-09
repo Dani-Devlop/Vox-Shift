@@ -67,3 +67,6 @@ download/
 # local ASR/TTS model weights — artifacts, never tracked (GH-PUSH-3 lesson)
 vosk-model-*
 models/
+
+# benchmark audio artifacts (results JSONs are tracked, WAVs/SEs are not)
+voxshift-ml/bench/audio/

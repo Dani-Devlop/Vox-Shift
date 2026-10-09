@@ -1,0 +1,9 @@
+{
+  "name": "voice-clone-service",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "python3 index.py",
+    "selftest": "/home/z/ttsbench/bin/python selftest.py"
+  }
+}
