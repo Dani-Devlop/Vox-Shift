@@ -1,0 +1,167 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ── Identity ─────────────────────────────────────────────────────────────────
+// Anonymous, cookie-scoped user (vox_uid). No passwords — the cookie is the
+// identity. All owned records hang off this row so a second browser cannot
+// read another user's threads (checked server-side on every API route).
+
+model User {
+  id            String   @id @default(cuid())
+  createdAt     DateTime @default(now())
+  lastSeenAt    DateTime @default(now()) @updatedAt
+  prefsJson     String? // global UI/translation preferences (JSON)
+  conversations Conversation[]
+  voiceProfiles VoiceProfile[]
+  historyEntries HistoryEntry[]
+
+  @@index([lastSeenAt])
+}
+
+// ── Voice identity ───────────────────────────────────────────────────────────
+// Voice profile built from the user's voice sample. MVP strategy: analyze
+// acoustic features (pitch, brightness, tempo) and map to the closest engine
+// TTS voice + speed adjustment. The Voice Engine layer is modular so a real
+// voice-cloning engine can replace this later.
+// HONESTY: `mode` records what the profile actually is. "voice-match" =
+// estimated closest-slot mapping (NOT a clone). A provider that supports true
+// cloning would store mode "clone" + providerProfileId.
+
+model VoiceProfile {
+  id               String   @id @default(cuid())
+  userId           String?
+  user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name             String   @default("My Voice")
+  isActive         Boolean  @default(true)
+  /// Capability honesty: "voice-match" (estimated) | "clone" (provider-cloned)
+  mode             String   @default("voice-match")
+  /// When the user consented to voice-sample analysis (enrollment consent).
+  consentAt        DateTime?
+  meanF0           Float // mean fundamental frequency (Hz)
+  f0Std            Float // pitch variability (Hz)
+  f0Min            Float
+  f0Max            Float
+  spectralCentroid Float // brightness (Hz)
+  estimatedGender  String // "male" | "female" | "neutral"
+  voiceCharacter   String // human-friendly descriptor e.g. "Warm · Medium"
+  mappedVoice      String // engine voice id e.g. "jam"
+  speedAdjust      Float    @default(1.0) // 0.5..2.0 TTS speed factor
+  /// Pitch-conformance ratio: user's measured mean F0 ÷ engine voice's center
+  /// F0. The synthesis stage shifts output pitch by this factor (TTS speed
+  /// compensation + resampling) so the generated audio follows the user's
+  /// register. 1.0 = no shift. Clamped to [0.75, 1.33] for quality.
+  pitchRatio       Float    @default(1.0)
+  speakingRate     Float // estimated syllables/sec
+  sampleDuration   Float // seconds of analyzed audio
+  /// Sample-quality diagnostics captured at enrollment (§5.2 feedback):
+  /// fraction of clipped samples and approximate signal-to-noise ratio (dB).
+  clippingRatio    Float    @default(0)
+  snrDb            Float    @default(0)
+  engine           String   @default("zai-tts") // voice engine identifier (swappable)
+  /// Provider-side profile id (used by cloning engines; null for voice-match).
+  providerProfileId String?
+  /// Cloning model key used by the provider ('balanced' | 'quality'); null for voice-match.
+  providerModel    String?
+  /// Cloner stability 0..1 (higher = steadier, lower = more expressive).
+  stability        Float    @default(0.5)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([userId, isActive])
+}
+
+// ── Persisted translation history (global phrasebook) ────────────────────────
+model HistoryEntry {
+  id             String  @id @default(cuid())
+  userId         String?
+  user           User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sourceText     String
+  translatedText String
+  sourceLang     String  @default("fa")
+  targetLang     String  @default("en")
+  style          String  @default("natural")
+  voice          String  @default("default")
+  timingsJson    String // JSON: { asrMs, translateMs, ttsMs, totalMs }
+  hasAudio       Boolean @default(false)
+  /// User-starred phrase (phrasebook).
+  starred        Boolean @default(false)
+  /// Client-generated session grouping id (one start→stop cycle = one session).
+  sessionId      String?
+  createdAt      DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([sessionId])
+  @@index([userId, createdAt])
+}
+
+// ── Conversations (threads) ──────────────────────────────────────────────────
+// A thread is a persistent, resumable conversation. Settings overrides let a
+// thread carry its own language pair / style / voice without touching the
+// user's global defaults.
+
+model Conversation {
+  id             String   @id @default(cuid())
+  userId         String
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title          String   @default("New conversation")
+  /// Default direction for the thread (informational; overrides win).
+  sourceLang     String   @default("fa")
+  targetLang     String   @default("en")
+  /// Thread settings overrides JSON: { style?, mode?, otherLang?, voiceMode?,
+  /// playbackRate?, bigButton? } — absent keys inherit global preferences.
+  overridesJson  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  lastActivityAt DateTime @default(now())
+  sessions       ConversationSession[]
+  messages       Message[]
+
+  @@index([userId, lastActivityAt])
+}
+
+// A session is one recording / live-interaction period inside a thread.
+model ConversationSession {
+  id             String         @id @default(cuid())
+  conversationId String
+  conversation   Conversation   @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  status         String         @default("live") // live | ended
+  startedAt      DateTime       @default(now())
+  endedAt        DateTime?
+  messages       Message[]
+
+  @@index([conversationId, startedAt])
+}
+
+// One translated utterance inside a thread (source ↔ translation pair).
+// Audio replay reuses the HistoryEntry audio cache via historyEntryId —
+// no duplicate audio storage.
+model Message {
+  id               String              @id @default(cuid())
+  conversationId   String
+  conversation     Conversation        @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sessionId        String?
+  session          ConversationSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  sequenceNo       Int
+  speakerRole      String              @default("user") // user | other
+  sourceLang       String
+  targetLang       String
+  sourceText       String
+  translatedText   String
+  style            String              @default("natural")
+  voice            String              @default("default")
+  timingsJson      String?
+  /// HistoryEntry owning the disk-cached audio (replay via /api/history/{id}/audio).
+  historyEntryId   String?
+  /// complete | failed
+  processingStatus String              @default("complete")
+  createdAt        DateTime            @default(now())
+
+  @@index([conversationId, sequenceNo])
+  @@index([sessionId])
+}
