@@ -1,5 +1,12 @@
 # VoxShift v1.1.0 — Real-time Voice Translation with Voice Identity
 
+**Live demo (GitHub Pages, static UI):** <https://dani-devlop.github.io/Vox-Shift/>
+
+> The Pages deployment is a **static demo** — the real-time engine (ASR · LLM
+> translation · voice synthesis) needs the local backend (Next.js API routes +
+> the `translator-service` socket.io mini-service), so on Pages the UI honestly
+> reports the engine as offline. Clone and run locally for full functionality.
+
 VoxShift is a real-time, bidirectional speech translation app. Speak Persian (or
 Finglish) and hear it translated into natural English — spoken back with **your
 voice identity** — or reverse the direction and translate English into Persian.
