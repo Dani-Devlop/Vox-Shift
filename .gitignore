@@ -58,3 +58,8 @@ download/
 # platform workspace-restore artifacts
 .initial_snapshot.json
 .pending_clone.json
+
+# v3.0/v3.1 local runtime sources — MUST be tracked (lost once to the local-* rule; see worklog GH-PUSH-3)
+!mini-services/translator-service/engines/local-asr.ts
+!mini-services/translator-service/engines/local-tts.ts
+!mini-services/translator-service/providers/local-runtimes.ts
