@@ -549,3 +549,26 @@ Stage Summary:
 - ACCEPTANCE: "record my voice, create and save a profile, speak Persian, hear the English translation in that profile rather than the default demo voice" — fully implemented end-to-end. With ELEVENLABS_API_KEY configured: enrollment uploads the sample to ElevenLabs IVC, the profile stores the provider voice id, and every utterance/text-translation payload carries profileMode='clone'+providerProfileId so the realtime pipeline synthesizes with the user's actual cloned voice (cross-language Persian→English). WITHOUT the key: the app remains fully functional in honest pitch-conformed mode and the UI/diagnostics explain exactly what is required — never pretending.
 - Known risks: (1) z-ai quota window blocked live E2E re-verification this round (code paths additive-only); (2) clone latency depends on the provider (balanced ≈ sub-second typical; quality slower) — first utterance after enrollment may be slower; (3) ElevenLabs free tier IVC limits (few voices) — surfaced via verbatim provider errors; (4) orphaned "QA Clone Tone 220" profile belongs to a cookie-less curl identity (harmless demo data).
 - Next priorities: 1) when the z-ai window clears: run e2e-probe + e2e-audio-probe + a browser typed-phrase test with a clone profile if a real key gets added; 2) add a real ELEVENLABS_API_KEY to /home/z/my-project/.env + restart both services to unlock true cloning (exact steps shown in-app); 3) optionally persist sample audio locally for "re-enroll with more audio" flows (disclosed storage change); 4) consider waveform scrubbing + multi-take enrollment; 5) vitest suite for the §12 matrix.
+
+---
+Task ID: GH-1
+Agent: main (Z.ai Code)
+Task: Upload VoxShift to GitHub (Dani-Devlop/Vox-Shift) + bring the online version up on GitHub Pages
+
+Work Log:
+- Read worklog; confirmed project at v1.1.0 (real ElevenLabs IVC cloning + honest pitch-conformed mode).
+- SECURITY CLEANUP before publish: .env, db/custom.db and db/audio/*.wav (30 user voice samples) were git-TRACKED → git rm --cached + .gitignore rules (.env, db/, tool-results/, qa-*.png, .zscripts/, upload/, download/). Voice files kept safe on disk.
+- Rebuilt history as a clean orphan branch (2 commits + license/docs commits) so NO private data / old blobs enter the public repo history. Old local main ref replaced; working tree preserved via update-ref (a sandbox background process had flipped HEAD back to old main and reverted worktree files — restored from HEAD commit).
+- Remote had an initial commit (MIT LICENSE + README) → preserved the MIT LICENSE in the new history.
+- PAT #1 (repo scope only) rejected workflow-file pushes → user supplied PAT #2 (repo, workflow) → pushed cleanly.
+- Repo: https://github.com/Dani-Devlop/Vox-Shift (main @ 66e61e4).
+- GitHub Pages: .github/workflows/deploy-pages.yml — on push to main: bun install → strip src/app/api (server routes can't run on Pages) → STATIC_EXPORT=1 next build (next.config.ts: output 'export', basePath '/Vox-Shift', images unoptimized) → deploy via actions/deploy-pages.
+- next.config.ts now dual-mode: standalone locally / static export when STATIC_EXPORT=1. page.tsx: honest "Static GitHub Pages demo" amber banner appears after 4 s when the socket never connects (grace period so local startup never flashes it).
+- README: live-demo link + static-demo explanation.
+- Enabled Pages via API (POST /pages build_type=workflow → HTTP 201).
+- Verification (real results): Actions runs #1 (2f75ab5) and #2 (66e61e4) both SUCCESS; https://dani-devlop.github.io/Vox-Shift/ → HTTP 200, title OK, /Vox-Shift/_next assets HTTP 200; agent-browser: desktop renders fully (banner + red Engine pill honest-offline + MicOrb + settings), Voice Identity view renders (provider banner + consent + record UI), Voice/Talk nav works, 0 console errors, 0 page errors; mobile 390 px → NO horizontal overflow, bottom nav intact.
+
+Stage Summary:
+- ACCEPTANCE MET: code published to github.com/Dani-Devlop/Vox-Shift (clean history, MIT license kept, no secrets/private data), GitHub Pages live static demo at https://dani-devlop.github.io/Vox-Shift/ with auto-redeploy on every push to main.
+- Known limitations (honest): Pages serves UI only — ASR/translation/voice engine + profiles need the local backend (banner explains this in-app). The first PAT (repo-only) should be revoked/rotated since it was shared in chat; the second token also was shared — recommend rotation and, if possible, fine-grained tokens.
+- Next priorities: 1) rotate GitHub tokens; 2) when a real ELEVENLABS_API_KEY is configured locally, re-run e2e-probe + live clone audition (blocked earlier by z-ai 429 window); 3) optionally auto-refresh gh-pages in the periodic review if Pages ever drifts; 4) consider Actions badge in README.
