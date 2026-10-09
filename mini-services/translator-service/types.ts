@@ -27,6 +27,18 @@ export interface UtteranceRequest {
   providerModel?: string
   /** Cloner stability 0..1 (higher = steadier, lower = more expressive). */
   stability?: number
+  /** Provider similarity boost 0..1 (clone mode only). */
+  providerSimilarity?: number
+  /** Provider style exaggeration 0..0.45 (clone mode only). */
+  providerStyle?: number
+  /** Speaker turn label for two-person interpreter conversations.
+   *  'A' = primary speaker, 'B' = second speaker (opposite direction).
+   *  Manual attribution — the ASR engine provides NO diarization; the UI
+   *  must state that honestly. */
+  speakerRole?: 'A' | 'B'
+  /** Pair spec for AUTO conversations ('fa,en'): detect source → target is
+   *  the OTHER member. Only used when sourceLang/targetLang are 'auto'. */
+  autoPair?: string
 }
 
 export type PipelineStage = 'asr' | 'translate' | 'tts'
@@ -49,9 +61,15 @@ export interface UtteranceResult {
   /** How the audio was produced: provider-cloned voice, pitch-conformed
    *  preset, or the pipeline default. The UI must label this honestly. */
   voiceMode?: 'clone' | 'voice-match' | 'default'
-  /** Echoed direction so the client can label transcript entries */
+  /** Echoed direction so the client can label transcript entries.
+   *  When the request used sourceLang 'auto', this is the DETECTED language
+   *  (never the literal string 'auto'). */
   sourceLang: string
   targetLang: string
+  /** Set when auto-detection ran — the language the ASR text was recognized as. */
+  detectedLang?: string
+  /** Echoed speaker turn label ('A' default). */
+  speakerRole?: 'A' | 'B'
   timings: {
     asrMs: number
     translateMs: number
@@ -86,6 +104,14 @@ export interface TextTranslateRequest {
   providerModel?: string
   /** Cloner stability 0..1 (higher = steadier, lower = more expressive). */
   stability?: number
+  /** Provider similarity boost 0..1 (clone mode only). */
+  providerSimilarity?: number
+  /** Provider style exaggeration 0..0.45 (clone mode only). */
+  providerStyle?: number
+  /** Speaker turn label — see UtteranceRequest.speakerRole. */
+  speakerRole?: 'A' | 'B'
+  /** Pair spec for AUTO conversations — see UtteranceRequest.autoPair. */
+  autoPair?: string
 }
 
 /**
@@ -96,9 +122,11 @@ export interface TranslationEvent {
   utteranceId: string
   sourceText: string
   translatedText: string
+  /** Detected language when auto-detect ran, else the requested source. */
   sourceLang: string
   targetLang: string
   voice: string
+  speakerRole?: 'A' | 'B'
 }
 
 /**

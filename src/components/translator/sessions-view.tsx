@@ -33,6 +33,7 @@ interface SessionsViewProps {
   onLoadMoreHistory: () => Promise<void>
   onClearHistory: () => Promise<void>
   onToggleStar: (id: string) => Promise<void>
+  onDeleteHistory: (id: string) => Promise<boolean>
   onShareSaved: (entry: HistoryEntryData) => void
   onReuse: (entry: HistoryEntryData) => void
   playbackRate: number
@@ -195,6 +196,9 @@ export function SessionsView(p: SessionsViewProps) {
                         </span>
                       </button>
                       <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                        <Button size="sm" variant="ghost" onClick={() => void p.onOpenThread(c.id)} className="h-7 w-7 px-0 text-zinc-400 hover:bg-zinc-800 hover:text-amber-300" aria-label={`Open settings of ${c.title}`} title="Open conversation & its settings">
+                          <SlidersHorizontal className="h-3 w-3" aria-hidden />
+                        </Button>
                         <Button size="sm" variant="ghost" onClick={() => { setRenamingId(c.id); setRenameValue(c.title) }} className="h-7 w-7 px-0 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200" aria-label={`Rename ${c.title}`}>
                           <Pencil className="h-3 w-3" aria-hidden />
                         </Button>
@@ -222,6 +226,7 @@ export function SessionsView(p: SessionsViewProps) {
         onLoadMore={p.onLoadMoreHistory}
         onShare={p.onShareSaved}
         onToggleStar={p.onToggleStar}
+        onDelete={(id) => p.onDeleteHistory(id)}
         onReuse={p.onReuse}
       />
     </div>

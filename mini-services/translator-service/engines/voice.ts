@@ -99,6 +99,10 @@ export interface IdentitySynthesisOptions {
   providerProfileId?: string
   providerModel?: string
   stability?: number
+  /** Provider similarity boost 0..1 (clone mode only). */
+  providerSimilarity?: number
+  /** Provider style exaggeration 0..0.45 (clone mode only). */
+  providerStyle?: number
 }
 
 /**
@@ -127,6 +131,8 @@ export class VoiceIdentityEngine implements VoiceEngine {
         speed: opts.speed,
         providerModel: opts.providerModel,
         stability: opts.stability,
+        similarityBoost: opts.providerSimilarity,
+        styleExaggeration: opts.providerStyle,
       })
     }
     // 'voice-match' (and any legacy payload without a mode) → pitch-conformed preset.

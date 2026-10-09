@@ -30,12 +30,14 @@ interface HistoryCardProps {
   onShare?: (entry: HistoryEntryData) => void
   /** Star / unstar a saved phrase (phrasebook). */
   onToggleStar?: (entryId: string) => void
+  /** Delete ONE saved entry (text + audio). */
+  onDelete?: (entryId: string) => void
   /** Re-run a saved source phrase through the pipeline with current settings. */
   onReuse?: (entry: HistoryEntryData) => void
 }
 
 /** Collapsible with lazy first load; stays in sync as new results autosave. */
-export function HistoryCard({ history, loading, onLoad, onClear, playbackRate = 1, cursor = null, onLoadMore, onShare, onToggleStar, onReuse }: HistoryCardProps) {
+export function HistoryCard({ history, loading, onLoad, onClear, playbackRate = 1, cursor = null, onLoadMore, onShare, onToggleStar, onDelete, onReuse }: HistoryCardProps) {
   const [open, setOpen] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
   const [copiedAll, setCopiedAll] = useState(false)
@@ -443,6 +445,17 @@ export function HistoryCard({ history, loading, onLoad, onClear, playbackRate = 
                                   )}
                                   aria-hidden
                                 />
+                              </button>
+                            )}
+                            {onDelete && (
+                              <button
+                                type="button"
+                                onClick={() => onDelete(entry.id)}
+                                aria-label={`Delete this saved phrase`}
+                                title="Delete entry (text + audio)"
+                                className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-zinc-600 transition-colors hover:border-rose-900/60 hover:text-rose-300"
+                              >
+                                <Trash2 className="h-2.5 w-2.5" aria-hidden />
                               </button>
                             )}
                             {onReuse && (

@@ -81,6 +81,8 @@ export async function POST(req: NextRequest) {
             modelKey: (profile.providerModel ?? 'balanced') as CloneModelKey | null,
             speed: 1.0,
             stability: profile.stability ?? 0.5,
+            similarityBoost: profile.providerSimilarity ?? 0.8,
+            style: profile.providerStyle ?? 0,
           })
           return NextResponse.json({
             audioBase64: wav.toString('base64'),

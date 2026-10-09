@@ -72,13 +72,15 @@ export async function GET(req: NextRequest) {
 /**
  * POST /api/voice-profile
  * Body: { audioBase64: string (raw PCM Int16 LE), sampleRate: number, consented?: boolean,
- *         name?: string, providerModel?: 'balanced'|'quality', stability?: number }
+ *         name?: string, providerModel?: 'balanced'|'quality', stability?: number,
+ *         providerSimilarity?: number, providerStyle?: number,
+ *         extraSamples?: string[] (raw PCM base64, same sampleRate — 1..2 more takes) }
  *
- * Analyzes the sample acoustically, then:
- *  - when the cloning provider is configured → uploads the sample for REAL
- *    cross-language voice cloning (ElevenLabs IVC) and stores the returned
- *    provider voice id (mode 'clone'). The provider error is surfaced
- *    verbatim on failure — no profile is faked.
+ * Analyzes the sample(s) acoustically, then:
+ *  - when the cloning provider is configured → uploads ALL takes for REAL
+ *    cross-language voice cloning (ElevenLabs IVC merges them into one stronger
+ *    embedding) and stores the returned provider voice id (mode 'clone'). The
+ *    provider error is surfaced verbatim on failure — no profile is faked.
  *  - otherwise → creates the honest pitch-conformed 'voice-match' profile and
  *    the response explains exactly how to enable real cloning.
  */
@@ -91,6 +93,16 @@ export async function POST(req: NextRequest) {
     const name = typeof body?.name === 'string' ? body.name.trim().slice(0, 60) : ''
     const providerModel = body?.providerModel === 'quality' || body?.providerModel === 'balanced' ? body.providerModel : 'balanced'
     const stability = Number.isFinite(Number(body?.stability)) ? Math.min(1, Math.max(0, Number(body.stability))) : 0.5
+    const providerSimilarity = Number.isFinite(Number(body?.providerSimilarity))
+      ? Math.min(1, Math.max(0, Number(body.providerSimilarity)))
+      : 0.8
+    const providerStyle = Number.isFinite(Number(body?.providerStyle))
+      ? Math.min(0.45, Math.max(0, Number(body.providerStyle)))
+      : 0
+    // Multi-take enrollment (up to 3 samples total) — same sample rate required.
+    const extraSamples: string[] = Array.isArray(body?.extraSamples)
+      ? body.extraSamples.filter((s: unknown) => typeof s === 'string').slice(0, 2)
+      : []
 
     if (!consented) {
       return NextResponse.json(
@@ -106,26 +118,43 @@ export async function POST(req: NextRequest) {
     }
 
     const pcm = base64ToPcm(audioBase64)
-    const durationSec = pcm.length / sampleRate
+    const extraPcms = extraSamples.map((s) => base64ToPcm(s))
+    const allPcms = [pcm, ...extraPcms]
+
+    // Per-sample duration + total (clone needs ≥8s TOTAL across takes).
+    const durations = allPcms.map((p) => p.length / sampleRate)
+    const totalDurationSec = durations.reduce((a, b) => a + b, 0)
     const minSec = cloneConfigured() ? CLONE_MIN_DURATION_SEC : MIN_DURATION_SEC
-    if (durationSec < minSec) {
+    if (totalDurationSec < minSec) {
       return NextResponse.json(
         {
           error: cloneConfigured()
-            ? `Voice sample too short (${durationSec.toFixed(1)}s). Cloning needs at least ${CLONE_MIN_DURATION_SEC}s — speak longer for a faithful clone.`
-            : `Voice sample too short (${durationSec.toFixed(1)}s). Record at least ${MIN_DURATION_SEC}s.`,
+            ? `Voice sample too short (${totalDurationSec.toFixed(1)}s total). Cloning needs at least ${CLONE_MIN_DURATION_SEC}s — record another take for a faithful clone.`
+            : `Voice sample too short (${totalDurationSec.toFixed(1)}s). Record at least ${MIN_DURATION_SEC}s.`,
         },
         { status: 400 }
       )
     }
-    if (durationSec > MAX_DURATION_SEC) {
+    if (allPcms.some((p) => p.length / sampleRate > MAX_DURATION_SEC)) {
       return NextResponse.json(
-        { error: `Voice sample too long (${durationSec.toFixed(0)}s). Max ${MAX_DURATION_SEC}s.` },
+        { error: `A voice sample is too long (max ${MAX_DURATION_SEC}s per take).` },
         { status: 400 }
       )
     }
 
+    // Analyze the PRIMARY take for the acoustic profile; extra takes only
+    // strengthen the provider embedding (they are not averaged into pitch math
+    // — mixing sessions would skew F0). Silence check runs on every take.
     const features: VoiceFeatures = analyzePcm(pcm, sampleRate)
+    for (const p of extraPcms) {
+      const f = analyzePcm(p, sampleRate)
+      if (f.voicedRatio < 0.08 || f.meanF0 <= 0) {
+        return NextResponse.json(
+          { error: 'One of the additional takes has no clear voice — re-record that take.' },
+          { status: 422 }
+        )
+      }
+    }
 
     // Reject samples that are essentially silence
     if (features.voicedRatio < 0.08 || features.meanF0 <= 0) {
@@ -146,12 +175,12 @@ export async function POST(req: NextRequest) {
       )
     }
 
-    // ── REAL VOICE CLONING: enroll the sample with the provider ─────────────
+    // ── REAL VOICE CLONING: enroll ALL takes with the provider ─────────────
     let clone: { providerProfileId: string; requiresVerification: boolean } | null = null
     if (cloneConfigured()) {
       try {
-        const wav = pcmToWav(Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength), sampleRate)
-        clone = await enrollCloneVoice(name || 'My Voice', wav)
+        const wavs = allPcms.map((p) => pcmToWav(Buffer.from(p.buffer, p.byteOffset, p.byteLength), sampleRate))
+        clone = await enrollCloneVoice(name || 'My Voice', wavs)
       } catch (err) {
         // Honest failure — never create a profile that pretends to be a clone.
         const message = err instanceof Error ? err.message : 'Cloning provider enrollment failed'
@@ -187,6 +216,9 @@ export async function POST(req: NextRequest) {
         providerProfileId: clone?.providerProfileId ?? null,
         providerModel: clone ? providerModel : null,
         stability,
+        providerSimilarity: clone ? providerSimilarity : 0.8,
+        providerStyle: clone ? providerStyle : 0,
+        sampleCount: allPcms.length,
       },
     })
     const profiles = await db.voiceProfile.findMany({
@@ -203,8 +235,10 @@ export async function POST(req: NextRequest) {
 
 /**
  * PATCH /api/voice-profile — rename, set default, or update the cloning
- * advanced settings (providerModel, stability) of one profile.
- * Body: { id: string, name?: string, isActive?: boolean, providerModel?: string, stability?: number }
+ * advanced settings (providerModel, stability, providerSimilarity,
+ * providerStyle) of one profile.
+ * Body: { id: string, name?: string, isActive?: boolean, providerModel?: string,
+ *         stability?: number, providerSimilarity?: number, providerStyle?: number }
  */
 export async function PATCH(req: NextRequest) {
   try {
@@ -216,7 +250,14 @@ export async function PATCH(req: NextRequest) {
     const profile = await db.voiceProfile.findFirst({ where: { id, OR: [{ userId }, { userId: null }] } })
     if (!profile) return NextResponse.json({ error: 'Profile not found' }, { status: 404 })
 
-    const data: { name?: string; isActive?: boolean; providerModel?: string; stability?: number } = {}
+    const data: {
+      name?: string
+      isActive?: boolean
+      providerModel?: string
+      stability?: number
+      providerSimilarity?: number
+      providerStyle?: number
+    } = {}
     if (typeof body?.name === 'string' && body.name.trim()) data.name = body.name.trim().slice(0, 60)
     if (body?.isActive === true) {
       await db.voiceProfile.updateMany({ where: { userId }, data: { isActive: false } })
@@ -228,6 +269,12 @@ export async function PATCH(req: NextRequest) {
       }
       if (Number.isFinite(Number(body?.stability))) {
         data.stability = Math.min(1, Math.max(0, Number(body.stability)))
+      }
+      if (Number.isFinite(Number(body?.providerSimilarity))) {
+        data.providerSimilarity = Math.min(1, Math.max(0, Number(body.providerSimilarity)))
+      }
+      if (Number.isFinite(Number(body?.providerStyle))) {
+        data.providerStyle = Math.min(0.45, Math.max(0, Number(body.providerStyle)))
       }
     }
     const updated = await db.voiceProfile.update({ where: { id }, data })

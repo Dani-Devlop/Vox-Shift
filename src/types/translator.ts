@@ -95,17 +95,21 @@ export interface LangMeta {
   rtl: boolean
   /** Native-script hint shown in the type-to-translate input. */
   sampleHint: string
+  /** Honest TTS capability for this language with the current engine:
+   *  'native' = a tuned engine voice exists · 'beta' = translation works but
+   *  the synthesized voice is accented (marked β in the UI, hideable). */
+  tts: 'native' | 'beta'
 }
 
 export const LANG_META: Record<string, LangMeta> = {
-  fa: { flag: '🇮🇷', name: 'Persian', rtl: true, sampleHint: 'سلام، حالت چطوره؟' },
-  en: { flag: '🇬🇧', name: 'English', rtl: false, sampleHint: 'Hi, how are you doing today?' },
-  de: { flag: '🇩🇪', name: 'German', rtl: false, sampleHint: 'Guten Morgen, wie geht es dir?' },
-  fr: { flag: '🇫🇷', name: 'French', rtl: false, sampleHint: "Bonjour, comment ça va aujourd'hui ?" },
-  es: { flag: '🇪🇸', name: 'Spanish', rtl: false, sampleHint: 'Hola, ¿cómo estás hoy?' },
-  ar: { flag: '🇸🇦', name: 'Arabic', rtl: true, sampleHint: 'مرحباً، كيف حالك اليوم؟' },
-  tr: { flag: '🇹🇷', name: 'Turkish', rtl: false, sampleHint: 'Merhaba, bugün nasılsın?' },
-  it: { flag: '🇮🇹', name: 'Italian', rtl: false, sampleHint: 'Ciao, come stai oggi?' },
+  fa: { flag: '🇮🇷', name: 'Persian', rtl: true, sampleHint: 'سلام، حالت چطوره؟', tts: 'beta' },
+  en: { flag: '🇬🇧', name: 'English', rtl: false, sampleHint: 'Hi, how are you doing today?', tts: 'native' },
+  de: { flag: '🇩🇪', name: 'German', rtl: false, sampleHint: 'Guten Morgen, wie geht es dir?', tts: 'beta' },
+  fr: { flag: '🇫🇷', name: 'French', rtl: false, sampleHint: "Bonjour, comment ça va aujourd'hui ?", tts: 'beta' },
+  es: { flag: '🇪🇸', name: 'Spanish', rtl: false, sampleHint: 'Hola, ¿cómo estás hoy?', tts: 'beta' },
+  ar: { flag: '🇸🇦', name: 'Arabic', rtl: true, sampleHint: 'مرحباً، كيف حالك اليوم؟', tts: 'beta' },
+  tr: { flag: '🇹🇷', name: 'Turkish', rtl: false, sampleHint: 'Merhaba, bugün nasılsın?', tts: 'beta' },
+  it: { flag: '🇮🇹', name: 'Italian', rtl: false, sampleHint: 'Ciao, come stai oggi?', tts: 'beta' },
 }
 
 export interface LangPair {
@@ -142,10 +146,17 @@ export interface TranslationEvent {
   utteranceId: string
   sourceText: string
   translatedText: string
+  /** Detected language when auto-detect ran, else the requested source. */
   sourceLang: string
   targetLang: string
   voice: string
+  speakerRole?: SpeakerRole
 }
+
+/** Manual speaker-turn label for two-person conversations. The ASR engine
+ *  provides NO diarization — attribution is an explicit user action and the
+ *  UI must say so. */
+export type SpeakerRole = 'A' | 'B'
 
 export interface UtteranceResult {
   utteranceId: string
@@ -156,8 +167,13 @@ export interface UtteranceResult {
   voice: string
   /** 'clone' = real provider-cloned voice · 'voice-match' = pitch-conformed preset · 'default' */
   voiceMode?: 'clone' | 'voice-match' | 'default'
+  /** Detected language when the AUTO direction was used (never 'auto'). */
   sourceLang: string
   targetLang: string
+  /** Set when auto-detection ran. */
+  detectedLang?: string
+  /** Echoed speaker turn label ('A' default). */
+  speakerRole?: SpeakerRole
   timings: {
     asrMs: number
     translateMs: number

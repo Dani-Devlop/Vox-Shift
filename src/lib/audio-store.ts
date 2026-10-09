@@ -78,3 +78,14 @@ export function clearAudioFiles(): void {
     // best-effort
   }
 }
+
+/** Remove ONE cached WAV (single-entry delete). Best-effort, idempotent. */
+export function deleteAudioFile(id: string): void {
+  try {
+    if (!isValidHistoryId(id)) return
+    const p = audioFilePath(id)
+    if (existsSync(p)) unlinkSync(p)
+  } catch {
+    // best-effort
+  }
+}

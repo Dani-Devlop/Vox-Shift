@@ -16,7 +16,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   ArrowLeftRight, AudioLines, BadgeCheck, ChevronDown, CircleAlert, CircleStop, Fingerprint, Loader2,
-  Mic, Pencil, Play, RotateCcw, ShieldCheck, Sliders, Square, Star, Trash2, Volume2,
+  Mic, Pencil, Play, Plus, RotateCcw, ShieldCheck, Sliders, Square, Star, Trash2, Volume2,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -53,12 +53,18 @@ interface VoiceIdentityViewProps {
     sampleRate: number,
     consented: boolean,
     name?: string,
-    cloneOpts?: { providerModel?: 'balanced' | 'quality'; stability?: number }
+    cloneOpts?: {
+      providerModel?: 'balanced' | 'quality'
+      stability?: number
+      providerSimilarity?: number
+      providerStyle?: number
+      extraSamples?: string[]
+    }
   ) => Promise<VoiceProfileData | null>
   onSelect: (id: string) => Promise<boolean>
   onRename: (id: string, name: string) => Promise<boolean>
   onDelete: (id?: string) => Promise<void>
-  onUpdateClone: (id: string, patch: { providerModel?: 'balanced' | 'quality'; stability?: number }) => Promise<boolean>
+  onUpdateClone: (id: string, patch: { providerModel?: 'balanced' | 'quality'; stability?: number; providerSimilarity?: number; providerStyle?: number }) => Promise<boolean>
   /** Output language of the current language pair — preview sentence follows it. */
   previewLang: string
 }
@@ -153,7 +159,16 @@ export function VoiceIdentityView({
   /** Cloning advanced choices applied at enrollment. */
   const [enrollModel, setEnrollModel] = useState<'balanced' | 'quality'>('balanced')
   const [enrollStability, setEnrollStability] = useState(0.5)
+  const [enrollSimilarity, setEnrollSimilarity] = useState(0.8)
+  const [enrollStyle, setEnrollStyle] = useState(0)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  /** Multi-take enrollment: saved takes merge into ONE provider embedding
+   *  (ElevenLabs IVC accepts multiple files). Max 3 takes total. */
+  const MAX_TAKES = 3
+  const takesRef = useRef<Int16Array[]>([])
+  const [takeCount, setTakeCount] = useState(0)
+  /** Elapsed seconds of the REAL server round-trip (honest progress). */
+  const [analyzeElapsed, setAnalyzeElapsed] = useState(0)
   const [renamingId, setRenamingId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState('')
   const [reviewUrl, setReviewUrl] = useState<string | null>(null)
@@ -354,7 +369,8 @@ export function VoiceIdentityView({
     setReviewPlaying(true)
   }, [reviewUrl])
 
-  /** Submit the reviewed sample → provider enrollment (+ pitch analysis). */
+  /** Submit the reviewed sample(s) → provider enrollment (+ pitch analysis).
+   *  All takes go to the provider; the primary take drives pitch analysis. */
   const submitSample = useCallback(async () => {
     const pcm = reviewPcmRef.current
     if (!pcm) {
@@ -363,13 +379,33 @@ export function VoiceIdentityView({
     }
     reviewAudioRef.current?.pause()
     setPhase('analyzing')
+    setAnalyzeElapsed(0)
     await onCreate(pcmToBase64(pcm), 16000, true, profileName.trim() || undefined, {
       providerModel: enrollModel,
       stability: enrollStability,
+      providerSimilarity: enrollSimilarity,
+      providerStyle: enrollStyle,
+      extraSamples: takesRef.current.length > 0 ? takesRef.current.map((t) => pcmToBase64(t)) : undefined,
     })
+    // Reset the multi-take buffer after a completed attempt (success or fail —
+    // the user sees the outcome and can start a fresh enrollment).
+    takesRef.current = []
+    setTakeCount(0)
     setProfileName('')
     setPhase('idle')
-  }, [enrollModel, enrollStability, onCreate, profileName])
+  }, [enrollModel, enrollStability, enrollSimilarity, enrollStyle, onCreate, profileName])
+
+  /** Keep the reviewed take and record ANOTHER one (multi-sample enrollment). */
+  const keepTakeAndRecordAgain = useCallback(() => {
+    const pcm = reviewPcmRef.current
+    if (!pcm || takesRef.current.length >= MAX_TAKES - 1) return
+    takesRef.current.push(pcm)
+    setTakeCount(takesRef.current.length)
+    reviewAudioRef.current?.pause()
+    reviewPcmRef.current = null
+    setReviewUrl(null)
+    setPhase('idle')
+  }, [])
 
   const cancelReview = useCallback(() => {
     reviewAudioRef.current?.pause()
@@ -393,10 +429,19 @@ export function VoiceIdentityView({
   const recording = phase === 'recording'
   const progress = Math.min(1, elapsed / MAX_SAMPLE_SEC)
   const previewBusy = preview !== 'idle' || compare !== 'idle'
-  /** Honest stage position: recording → 0; review waiting for user → 1;
-   *  analyzing → server round-trip (upload → … → save) shown live. */
+  /** Honest progress: only REAL completed steps are shown as done. During the
+   *  server round-trip we show the current step + a live elapsed timer — no
+   *  invented percentages, no invented ETA (the provider gives none). */
   const stages = cloneReady ? STAGES_CLONE : STAGES_MATCH
-  const stageIndex = recording ? 0 : phase === 'review' ? 1 : phase === 'analyzing' ? 2 : -1
+  const analyzeTimerRunning = phase === 'analyzing'
+  useEffect(() => {
+    if (!analyzeTimerRunning) return
+    const startedAt = performance.now()
+    const interval = setInterval(() => setAnalyzeElapsed((performance.now() - startedAt) / 1000), 200)
+    return () => clearInterval(interval)
+  }, [analyzeTimerRunning])
+  const stageIndex =
+    recording ? 0 : phase === 'review' ? 1 : phase === 'analyzing' ? 2 : -1
 
   const isClone = profile?.mode === 'clone'
 
@@ -681,6 +726,42 @@ export function VoiceIdentityView({
                         Lower = more expressive & emotional · higher = steadier and more consistent.
                       </p>
                     </div>
+                    <div>
+                      <p className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        <span>Similarity boost</span>
+                        <span className="font-mono normal-case">{(profile.providerSimilarity ?? 0.8).toFixed(2)}</span>
+                      </p>
+                      <Slider
+                        value={[profile.providerSimilarity ?? 0.8]}
+                        min={0.4}
+                        max={1}
+                        step={0.05}
+                        onValueCommit={([v]) => void onUpdateClone(profile.id, { providerSimilarity: v })}
+                        className="py-2"
+                        aria-label="Similarity boost"
+                      />
+                      <p className="text-[10px] leading-snug text-zinc-600">
+                        Higher = output stays closer to your enrolled voice.
+                      </p>
+                    </div>
+                    <div>
+                      <p className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        <span>Style exaggeration</span>
+                        <span className="font-mono normal-case">{(profile.providerStyle ?? 0).toFixed(2)}</span>
+                      </p>
+                      <Slider
+                        value={[profile.providerStyle ?? 0]}
+                        min={0}
+                        max={0.45}
+                        step={0.05}
+                        onValueCommit={([v]) => void onUpdateClone(profile.id, { providerStyle: v })}
+                        className="py-2"
+                        aria-label="Style exaggeration"
+                      />
+                      <p className="text-[10px] leading-snug text-zinc-600">
+                        Higher = follows the recorded speaking style more strongly.
+                      </p>
+                    </div>
                   </div>
                 )}
               </div>
@@ -719,8 +800,13 @@ export function VoiceIdentityView({
           /* ── Review step: replay the sample BEFORE submitting (spec: record,
              replay, submit) ── */
           <div className="space-y-3" aria-live="polite">
-            <p className="text-sm font-medium text-zinc-300">Sample recorded — listen before creating the profile</p>
+            <p className="text-sm font-medium text-zinc-300">
+              {takeCount > 0
+                ? `Take ${takeCount + 1} recorded — ${takeCount + 1} takes will merge into one stronger clone`
+                : 'Sample recorded — listen before creating the profile'}
+            </p>
             <Waveform pcm={reviewPcmRef.current} />
+            <ReviewQuality pcm={reviewPcmRef.current} />
             <div className="flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
               <Button
                 variant="outline"
@@ -767,19 +853,33 @@ export function VoiceIdentityView({
               >
                 Cancel
               </Button>
+              {cloneReady && takeCount < MAX_TAKES - 1 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={keepTakeAndRecordAgain}
+                  className="h-9 flex-[2] gap-1.5 border-teal-800/60 bg-teal-950/30 text-xs text-teal-200 hover:bg-teal-950/50"
+                  title="Keep this take and record another — multiple takes produce a stronger clone"
+                >
+                  <Plus className="h-3.5 w-3.5" aria-hidden /> Add take {takeCount + 2}/{MAX_TAKES}
+                </Button>
+              )}
               <Button size="sm" onClick={() => void submitSample()} className="h-9 flex-[2] gap-1.5 bg-emerald-600 text-xs font-semibold hover:bg-emerald-500">
                 <AudioLines className="h-4 w-4" aria-hidden />
-                {cloneReady ? 'Create voice clone' : 'Create profile'}
+                {cloneReady ? `Create voice clone${takeCount > 0 ? ` (${takeCount + 1} takes)` : ''}` : 'Create profile'}
               </Button>
             </div>
           </div>
         ) : view === 'analyzing' ? (
           <div className="flex flex-col items-center gap-3 py-6" aria-live="polite">
             <Loader2 className="h-6 w-6 animate-spin text-emerald-500" aria-hidden />
-            <p className="text-sm font-medium text-zinc-300">{stages[stageIndex] ?? 'Working on your voice…'}</p>
-            {/* Honest stage tracker: recording → upload → validate → analyze →
-                (clone: provider enrollment + confirmation) → save. Elapsed time
-                shown; no invented ETA — the provider call is a single request. */}
+            <p className="text-sm font-medium text-zinc-300">
+              {cloneReady ? 'Uploading to the cloning provider…' : 'Analyzing your sample…'}
+            </p>
+            {/* Honest stage tracker: only REAL completed steps get a ✓. The
+                server call is one request — the provider returns no progress
+                stream, so we show the true elapsed time instead of a fake
+                percentage or invented ETA. */}
             <ol className="mt-1 grid w-full max-w-sm grid-cols-2 gap-x-4 gap-y-1">
               {stages.map((s, i) => {
                 const current = i === stageIndex
@@ -809,7 +909,10 @@ export function VoiceIdentityView({
                 )
               })}
             </ol>
-            <p className="text-[11px] text-zinc-600">Elapsed: {(elapsed).toFixed(1)}s · estimated remaining: unavailable</p>
+            <p className="text-[11px] text-zinc-600">
+              Elapsed: {analyzeElapsed.toFixed(1)}s · the provider reports no intermediate progress,
+              so no ETA is shown
+            </p>
           </div>
         ) : (
           <div className="space-y-3">
@@ -891,6 +994,38 @@ export function VoiceIdentityView({
                         aria-label="Cloning stability"
                       />
                       <p className="text-[10px] leading-snug text-zinc-600">Lower = more expressive · higher = steadier.</p>
+                    </div>
+                    <div>
+                      <p className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        <span>Similarity boost</span>
+                        <span className="font-mono normal-case">{enrollSimilarity.toFixed(2)}</span>
+                      </p>
+                      <Slider
+                        value={[enrollSimilarity]}
+                        min={0.4}
+                        max={1}
+                        step={0.05}
+                        onValueChange={([v]) => setEnrollSimilarity(v)}
+                        className="py-2"
+                        aria-label="Similarity boost"
+                      />
+                      <p className="text-[10px] leading-snug text-zinc-600">Higher = closer to the enrolled voice.</p>
+                    </div>
+                    <div>
+                      <p className="mb-1.5 flex items-center justify-between text-[10px] font-semibold uppercase tracking-wider text-zinc-500">
+                        <span>Style exaggeration</span>
+                        <span className="font-mono normal-case">{enrollStyle.toFixed(2)}</span>
+                      </p>
+                      <Slider
+                        value={[enrollStyle]}
+                        min={0}
+                        max={0.45}
+                        step={0.05}
+                        onValueChange={([v]) => setEnrollStyle(v)}
+                        className="py-2"
+                        aria-label="Style exaggeration"
+                      />
+                      <p className="text-[10px] leading-snug text-zinc-600">Higher = follows the speaking style more strongly.</p>
                     </div>
                   </div>
                 )}
@@ -1064,6 +1199,64 @@ function ProfileStat({ label, value, mono }: { label: string; value: string; mon
     <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
       <p className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">{label}</p>
       <p className={cn('mt-0.5 truncate text-sm font-semibold text-zinc-200', mono && 'font-mono text-xs')}>{value}</p>
+    </div>
+  )
+}
+
+/** REAL review-time quality feedback computed from the recorded PCM itself:
+ *  loudness (RMS dBFS), clipping and duration hints — measurable, honest,
+ *  with actionable re-record coaching. */
+function ReviewQuality({ pcm }: { pcm: Int16Array | null }) {
+  if (!pcm || pcm.length === 0) return null
+  let sum = 0
+  let clipped = 0
+  for (let i = 0; i < pcm.length; i++) {
+    const v = pcm[i] / 32768
+    sum += v * v
+    if (Math.abs(pcm[i]) >= 32700) clipped++
+  }
+  const rms = Math.sqrt(sum / pcm.length)
+  const dbfs = 20 * Math.log10(Math.max(rms, 1e-6))
+  const durationSec = pcm.length / 16000
+  const clipRatio = clipped / pcm.length
+  const hints: { tone: 'ok' | 'warn' | 'bad'; text: string }[] = []
+  if (dbfs < -30) hints.push({ tone: 'bad', text: 'Too quiet — move closer to the microphone and speak up.' })
+  else if (dbfs > -8) hints.push({ tone: 'warn', text: 'Very loud — back away slightly to avoid distortion.' })
+  else hints.push({ tone: 'ok', text: 'Good recording level.' })
+  if (clipRatio > 0.005) hints.push({ tone: 'bad', text: 'Clipping detected — lower your input volume and re-record.' })
+  if (durationSec < 6) hints.push({ tone: 'warn', text: 'Short take — recording 10s+ produces a better profile.' })
+  return (
+    <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-3">
+      <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Sample quality (measured)</p>
+      <ul className="flex flex-col gap-1">
+        <li className="flex items-center justify-between text-[11px]">
+          <span className="text-zinc-400">Loudness</span>
+          <span className="font-mono text-zinc-300">{dbfs.toFixed(1)} dBFS</span>
+        </li>
+        <li className="flex items-center justify-between text-[11px]">
+          <span className="text-zinc-400">Clipping</span>
+          <span className="font-mono text-zinc-300">{(clipRatio * 100).toFixed(2)}%</span>
+        </li>
+        <li className="flex items-center justify-between text-[11px]">
+          <span className="text-zinc-400">Duration</span>
+          <span className="font-mono text-zinc-300">{durationSec.toFixed(1)}s</span>
+        </li>
+      </ul>
+      <ul className="mt-2 space-y-1">
+        {hints.map((h, i) => (
+          <li
+            key={i}
+            className={cn(
+              'text-[11px] leading-snug',
+              h.tone === 'ok' && 'text-emerald-400',
+              h.tone === 'warn' && 'text-amber-400',
+              h.tone === 'bad' && 'text-rose-400'
+            )}
+          >
+            {h.tone === 'ok' ? '✓' : h.tone === 'warn' ? '⚠' : '✗'} {h.text}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

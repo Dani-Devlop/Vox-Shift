@@ -9,6 +9,11 @@ import { processAsrPartial, processTextTranslate, processUtterance, clearSession
 // NOTE: path MUST stay '/' (Caddy gateway forwards ?XTransformPort=3003 here).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Sanitize the manual speaker-turn label ('A' default). */
+function speakerRole(value: unknown): 'A' | 'B' | undefined {
+  return value === 'A' || value === 'B' ? value : undefined
+}
+
 const httpServer = createServer()
 const io = new Server(httpServer, {
   path: '/',
@@ -86,6 +91,10 @@ io.on('connection', (socket) => {
         providerProfileId: typeof data.providerProfileId === 'string' ? data.providerProfileId : undefined,
         providerModel: typeof data.providerModel === 'string' ? data.providerModel : undefined,
         stability: typeof data.stability === 'number' ? data.stability : undefined,
+        providerSimilarity: typeof data.providerSimilarity === 'number' ? data.providerSimilarity : undefined,
+        providerStyle: typeof data.providerStyle === 'number' ? data.providerStyle : undefined,
+        speakerRole: speakerRole(data.speakerRole),
+        autoPair: typeof data.autoPair === 'string' ? data.autoPair.slice(0, 20) : undefined,
       }
       if (queue.length >= MAX_QUEUE) {
         socket.emit('utterance:error', {
@@ -156,6 +165,10 @@ io.on('connection', (socket) => {
         providerProfileId: typeof data.providerProfileId === 'string' ? data.providerProfileId : undefined,
         providerModel: typeof data.providerModel === 'string' ? data.providerModel : undefined,
         stability: typeof data.stability === 'number' ? data.stability : undefined,
+        providerSimilarity: typeof data.providerSimilarity === 'number' ? data.providerSimilarity : undefined,
+        providerStyle: typeof data.providerStyle === 'number' ? data.providerStyle : undefined,
+        speakerRole: speakerRole(data.speakerRole),
+        autoPair: typeof data.autoPair === 'string' ? data.autoPair.slice(0, 20) : undefined,
       }
       if (queue.length >= MAX_QUEUE) {
         socket.emit('utterance:error', {

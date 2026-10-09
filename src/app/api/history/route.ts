@@ -32,6 +32,49 @@ export async function GET(req: NextRequest) {
     const beforeMs = beforeParam ? Date.parse(beforeParam) : NaN
     const before = Number.isFinite(beforeMs) ? new Date(beforeMs) : null
 
+    // ── Retention policy (real, user-configured) ─────────────────────────
+    // historyRetentionDays: 0 = keep forever (default) · 7 / 30 / 90 = auto-
+    // delete TEXT rows older than the cutoff on load. Cached audio for pruned
+    // rows is removed too. Best-effort: a prune failure never breaks the read.
+    let retentionDays = 0
+    let prunedCount = 0
+    try {
+      if (userId) {
+        const user = await db.user.findUnique({ where: { id: userId }, select: { prefsJson: true } })
+        const parsed = user?.prefsJson ? (JSON.parse(user.prefsJson) as Record<string, unknown>) : null
+        const raw = Number(parsed?.historyRetentionDays)
+        retentionDays = [7, 30, 90].includes(raw) ? raw : 0
+      }
+    } catch {
+      retentionDays = 0
+    }
+    if (userId && retentionDays > 0) {
+      try {
+        const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000)
+        const old = await db.historyEntry.findMany({
+          where: { OR: [{ userId }, { userId: null }], createdAt: { lt: cutoff }, starred: false },
+          select: { id: true },
+          take: 200,
+        })
+        if (old.length > 0) {
+          const ids = old.map((o) => o.id)
+          await db.message.updateMany({ where: { historyEntryId: { in: ids } }, data: { historyEntryId: null } })
+          const res = await db.historyEntry.deleteMany({ where: { id: { in: ids } } })
+          prunedCount = res.count
+          for (const id of ids) {
+            try {
+              const { deleteAudioFile } = await import('@/lib/audio-store')
+              deleteAudioFile(id)
+            } catch {
+              /* best-effort */
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[history] retention prune failed (non-fatal):', err)
+      }
+    }
+
     const entries = await db.historyEntry.findMany({
       orderBy: { createdAt: 'desc' },
       take: limit,
@@ -65,6 +108,8 @@ export async function GET(req: NextRequest) {
       nextCursor: entries.length === limit && entries.length > 0
         ? entries[entries.length - 1].createdAt.toISOString()
         : null,
+      retentionDays,
+      prunedCount,
     })
   } catch (error) {
     console.error('[history] GET failed:', error)

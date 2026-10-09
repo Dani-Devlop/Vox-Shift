@@ -16,6 +16,7 @@ import type {
   Mode,
   OtherLang,
   PipelineStage,
+  SpeakerRole,
   StyleMode,
   StageEvent,
   ThreadDetailData,
@@ -59,6 +60,12 @@ export interface VoiceProfileData {
   providerModel: string | null
   /** Cloner stability 0..1. */
   stability: number
+  /** Provider similarity boost 0..1 (clone mode only). */
+  providerSimilarity?: number
+  /** Provider style exaggeration 0..0.45 (clone mode only). */
+  providerStyle?: number
+  /** Number of takes merged into this profile (1..3). */
+  sampleCount?: number
 }
 
 export interface TranscriptEntry {
@@ -71,6 +78,8 @@ export interface TranscriptEntry {
   voiceMode?: 'clone' | 'voice-match' | 'default'
   sourceLang: string
   targetLang: string
+  /** Speaker turn ('A' default) — manual attribution, no engine diarization. */
+  speakerRole?: SpeakerRole
   /** True when synthesized audio was delivered and may be replayable. */
   hasAudio: boolean
   createdAt: number
@@ -93,6 +102,7 @@ export interface TranslationPartial {
   sourceLang: string
   targetLang: string
   voice: string
+  speakerRole?: SpeakerRole
 }
 
 /** Live caption — partial ASR text while the user is still speaking. */
@@ -119,6 +129,13 @@ interface PersistedSettings {
   autoSaveHistory?: boolean
   useContext?: boolean
   showCaptions?: boolean
+  /** AUTO direction: detect the spoken language per utterance and translate
+   *  to the OTHER side of the pair (fa ↔ otherLang). */
+  autoDetect?: boolean
+  /** Show β (accented-TTS) languages in pickers — honest capability labels. */
+  betaLangs?: boolean
+  /** Auto-delete unstarred history older than N days (0 = keep forever). */
+  historyRetentionDays?: number
 }
 
 const SETTINGS_KEY = 'lt-settings'
@@ -171,7 +188,28 @@ export function useTranslator() {
   const [playbackRate, setPlaybackRateState] = useState<number>(1)
   /** Big-button talk mode — oversized push-to-talk for phone interpreters. */
   const [bigButton, setBigButtonState] = useState<boolean>(false)
-  const langPair = useMemo<LangPair>(() => getLangPair(mode, otherLang), [mode, otherLang])
+  /** AUTO direction + language availability + history retention (persisted). */
+  const [autoDetect, setAutoDetectState] = useState(false)
+  const [betaLangs, setBetaLangsState] = useState(true)
+  const [historyRetentionDays, setHistoryRetentionDaysState] = useState(0)
+  /** Manual speaker turn for two-person conversations ('A' = primary). NOT
+   *  persisted — a per-session state. The engine has NO diarization; this is
+   *  an explicit user action and the UI says so. */
+  const [speaker, setSpeakerState] = useState<SpeakerRole>('A')
+  const langPair = useMemo<LangPair>(
+    () =>
+      // AUTO direction: detect the spoken language per utterance; the server
+      // picks the target as the OTHER side of the declared pair (autoPair).
+      autoDetect ? { sourceLang: 'auto', targetLang: 'auto' } : getLangPair(mode, otherLang),
+    [mode, otherLang, autoDetect]
+  )
+  /** The two sides of an AUTO conversation, e.g. 'fa,en'. */
+  const autoPair = useMemo(() => `fa,${otherLang}`, [otherLang])
+  /** Languages offered in pickers — β (accented-TTS) ones hideable. */
+  const availableOtherLangs = useMemo<OtherLang[]>(
+    () => (betaLangs ? ['en', 'de', 'fr', 'es', 'ar', 'tr', 'it'] : ['en']),
+    [betaLangs]
+  )
   const [stats, setStats] = useState<LatencyStats>({
     count: 0,
     lastTotalMs: 0,
@@ -194,6 +232,8 @@ export function useTranslator() {
   const langPairRef = useRef(langPair)
   const playbackRateRef = useRef(playbackRate)
   const bigButtonRef = useRef(bigButton)
+  /** Pair spec for AUTO conversations ('fa,<other>') — mirrors otherLang. */
+  const autoPairRef = useRef('fa,en')
   /** Tail timer for the playback echo-guard (spec §9). */
   const echoTailRef = useRef<number | null>(null)
   /** Rolling audio cache for transcript replay (last 12 utterances). */
@@ -231,6 +271,9 @@ export function useTranslator() {
   const autoSaveRef = useRef(autoSaveHistory)
   const useContextRef = useRef(useContext)
   const showCaptionsRef = useRef(showCaptions)
+  const autoDetectRef = useRef(autoDetect)
+  const betaLangsRef = useRef(betaLangs)
+  const speakerRef = useRef(speaker)
   /** True once the initial localStorage+server preference load finished —
    *  prevents a defaults-save from clobbering stored preferences on boot. */
   const prefsHydratedRef = useRef(false)
@@ -263,6 +306,7 @@ export function useTranslator() {
     payload: { kind: 'audio' | 'text'; data: Record<string, unknown> } | null
   } | null>(null)
 
+  autoPairRef.current = `fa,${otherLangRef.current}`
   styleRef.current = style
   voiceModeRef.current = voiceMode
   profileRef.current = profile
@@ -274,6 +318,9 @@ export function useTranslator() {
   autoSaveRef.current = autoSaveHistory
   useContextRef.current = useContext
   showCaptionsRef.current = showCaptions
+  autoDetectRef.current = autoDetect
+  betaLangsRef.current = betaLangs
+  speakerRef.current = speaker
 
   // ── Voice profiles (REST) ────────────────────────────────────────────────
   const loadProfile = useCallback(async () => {
@@ -326,6 +373,11 @@ export function useTranslator() {
     if (typeof s.autoSaveHistory === 'boolean') setAutoSaveHistoryState(s.autoSaveHistory)
     if (typeof s.useContext === 'boolean') setUseContextState(s.useContext)
     if (typeof s.showCaptions === 'boolean') setShowCaptionsState(s.showCaptions)
+    if (typeof s.autoDetect === 'boolean') setAutoDetectState(s.autoDetect)
+    if (typeof s.betaLangs === 'boolean') setBetaLangsState(s.betaLangs)
+    if ([0, 7, 30, 90].includes(Number(s.historyRetentionDays))) {
+      setHistoryRetentionDaysState(Number(s.historyRetentionDays))
+    }
   }, [])
 
   useEffect(() => {
@@ -375,14 +427,14 @@ export function useTranslator() {
     const t = setTimeout(() => {
       if (activeThreadIdRef.current) return // inside a thread — do not persist
       try {
-        const s: PersistedSettings = { mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions }
+        const s: PersistedSettings = { mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays }
         localStorage.setItem(SETTINGS_KEY, JSON.stringify(s))
       } catch {
         // Storage unavailable — persistence is a convenience only.
       }
     }, 0)
     return () => clearTimeout(t)
-  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions])
+  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays])
 
   useEffect(() => {
     if (!prefsHydratedRef.current) return
@@ -393,7 +445,7 @@ export function useTranslator() {
       void fetch('/api/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions }),
+        body: JSON.stringify({ mode, otherLang, style, voiceMode, playbackRate, bigButton, textSize: uiPrefs.textSize, compact: uiPrefs.compact, showTranscript: uiPrefs.showTranscript, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays }),
       }).catch(() => {})
     }, PREFS_SAVE_DEBOUNCE_MS)
     return () => {
@@ -402,7 +454,7 @@ export function useTranslator() {
         prefsSaveTimerRef.current = null
       }
     }
-  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions])
+  }, [mode, otherLang, style, voiceMode, playbackRate, bigButton, uiPrefs, autoSaveHistory, useContext, showCaptions, autoDetect, betaLangs, historyRetentionDays])
 
   // ── UI customization setters (spec §4.4) ────────────────────────────────
   const setTextSize = useCallback((size: UIPrefs['textSize']) => setUiPrefs((prev) => ({ ...prev, textSize: size })), [])
@@ -411,6 +463,28 @@ export function useTranslator() {
   const setAutoSaveHistory = useCallback((on: boolean) => setAutoSaveHistoryState(on), [])
   const setUseContext = useCallback((on: boolean) => setUseContextState(on), [])
   const setShowCaptions = useCallback((on: boolean) => setShowCaptionsState(on), [])
+  /** AUTO direction switch — resets pipeline context (language-pair specific). */
+  const setAutoDetect = useCallback(
+    (on: boolean) => {
+      autoDetectRef.current = on
+      setAutoDetectState(on)
+      const s = getTranslatorSocket()
+      if (s.connected) s.emit('session:reset')
+    },
+    []
+  )
+  const setBetaLangs = useCallback((on: boolean) => {
+    betaLangsRef.current = on
+    setBetaLangsState(on)
+  }, [])
+  const setHistoryRetentionDays = useCallback((days: number) => {
+    setHistoryRetentionDaysState([0, 7, 30, 90].includes(days) ? days : 0)
+  }, [])
+  /** Manual speaker turn — applies to the NEXT utterance; no reset needed. */
+  const setSpeaker = useCallback((role: SpeakerRole) => {
+    speakerRef.current = role
+    setSpeakerState(role)
+  }, [])
 
   const setBigButton = useCallback((on: boolean) => setBigButtonState(on), [])
 
@@ -467,9 +541,17 @@ export function useTranslator() {
     return profile
   }, [threadProfileId, profiles, profile])
 
-  /** Cloning advanced settings (model / stability) for one cloned profile. */
+  /** Cloning advanced settings (model / stability / similarity / style) for one cloned profile. */
   const updateCloneSettings = useCallback(
-    async (id: string, patch: { providerModel?: 'balanced' | 'quality'; stability?: number }): Promise<boolean> => {
+    async (
+      id: string,
+      patch: {
+        providerModel?: 'balanced' | 'quality'
+        stability?: number
+        providerSimilarity?: number
+        providerStyle?: number
+      }
+    ): Promise<boolean> => {
       try {
         const res = await fetch('/api/voice-profile', {
           method: 'PATCH',
@@ -496,7 +578,15 @@ export function useTranslator() {
       sampleRate: number,
       consented: boolean,
       name?: string,
-      cloneOpts?: { providerModel?: 'balanced' | 'quality'; stability?: number }
+      cloneOpts?: {
+        providerModel?: 'balanced' | 'quality'
+        stability?: number
+        providerSimilarity?: number
+        providerStyle?: number
+        /** Up to 2 EXTRA takes (raw PCM base64, same sampleRate) — merged into
+         *  one stronger provider embedding (multi-sample enrollment). */
+        extraSamples?: string[]
+      }
     ): Promise<VoiceProfileData | null> => {
       setProfileLoading(true)
       try {
@@ -629,6 +719,7 @@ export function useTranslator() {
         sourceLang: event.sourceLang,
         targetLang: event.targetLang,
         voice: event.voice,
+        speakerRole: event.speakerRole,
       })
     }
 
@@ -660,6 +751,7 @@ export function useTranslator() {
         voiceMode: result.voiceMode,
         sourceLang: result.sourceLang ?? langPairRef.current.sourceLang,
         targetLang: result.targetLang ?? langPairRef.current.targetLang,
+        speakerRole: result.speakerRole ?? 'A',
         hasAudio: Boolean(result.audioBase64),
         createdAt: Date.now(),
       }
@@ -716,6 +808,7 @@ export function useTranslator() {
           body: JSON.stringify({
             conversationId: threadIdAtResult,
             sessionId: threadSessionAtResult?.sessionId,
+            speakerRole: entry.speakerRole === 'B' ? 'other' : 'user',
             source: entry.source,
             translated: entry.translated,
             sourceLang: entry.sourceLang,
@@ -733,7 +826,7 @@ export function useTranslator() {
               id: msgData.message.id,
               sessionId: threadSessionAtResult?.sessionId ?? null,
               sequenceNo: msgData.message.sequenceNo,
-              speakerRole: 'user',
+              speakerRole: entry.speakerRole === 'B' ? 'other' : 'user',
               sourceLang: entry.sourceLang,
               targetLang: entry.targetLang,
               source: entry.source,
@@ -972,7 +1065,12 @@ export function useTranslator() {
       const recorder = new MicRecorder({
         onUtterance: (audioBase64, durationSec) => {
           const prof = effectiveProfile()
-          const useProfile = Boolean(prof)
+          // Speaker B (second person in a two-way conversation) speaks the
+          // opposite language and audibly DIFFERENT: pipeline default voice,
+          // no profile — so the two sides of the dialogue are distinguishable.
+          const isB = speakerRef.current === 'B'
+          const bProf = isB ? null : prof
+          const useProfile = Boolean(bProf)
           const pair = langPairRef.current
           setSessionSpeechMs((v) => v + durationSec * 1000)
           setPendingCount((c) => c + 1)
@@ -983,14 +1081,18 @@ export function useTranslator() {
             sampleRate: 16000,
             sourceLang: pair.sourceLang,
             targetLang: pair.targetLang,
+            autoPair: autoDetectRef.current ? autoPairRef.current : undefined,
             style: styleRef.current,
-            voice: useProfile ? prof!.mappedVoice : DEFAULT_VOICE,
-            speed: useProfile ? prof!.speedAdjust : 1.0,
-            pitchRatio: useProfile ? prof!.pitchRatio : 1.0,
-            profileMode: useProfile ? prof!.mode : undefined,
-            providerProfileId: useProfile ? prof!.providerProfileId ?? undefined : undefined,
-            providerModel: useProfile ? prof!.providerModel ?? undefined : undefined,
-            stability: useProfile ? prof!.stability : undefined,
+            voice: useProfile ? bProf!.mappedVoice : isB ? 'jam' : DEFAULT_VOICE,
+            speed: useProfile ? bProf!.speedAdjust : 1.0,
+            pitchRatio: useProfile ? bProf!.pitchRatio : 1.0,
+            profileMode: useProfile ? bProf!.mode : undefined,
+            providerProfileId: useProfile ? bProf!.providerProfileId ?? undefined : undefined,
+            providerModel: useProfile ? bProf!.providerModel ?? undefined : undefined,
+            stability: useProfile ? bProf!.stability : undefined,
+            providerSimilarity: useProfile ? bProf!.providerSimilarity ?? undefined : undefined,
+            providerStyle: useProfile ? bProf!.providerStyle ?? undefined : undefined,
+            speakerRole: speakerRef.current,
           }
           // Context off (settings): each phrase translates standalone — clear the
           // pipeline's rolling conversation history before this utterance runs.
@@ -1135,6 +1237,7 @@ export function useTranslator() {
       text: trimmed,
       sourceLang: pair.sourceLang,
       targetLang: pair.targetLang,
+      autoPair: autoDetectRef.current ? autoPairRef.current : undefined,
       style: styleRef.current,
       voice: useProfile ? prof!.mappedVoice : DEFAULT_VOICE,
       speed: useProfile ? prof!.speedAdjust : 1.0,
@@ -1143,6 +1246,9 @@ export function useTranslator() {
       providerProfileId: useProfile ? prof!.providerProfileId ?? undefined : undefined,
       providerModel: useProfile ? prof!.providerModel ?? undefined : undefined,
       stability: useProfile ? prof!.stability : undefined,
+      providerSimilarity: useProfile ? prof!.providerSimilarity ?? undefined : undefined,
+      providerStyle: useProfile ? prof!.providerStyle ?? undefined : undefined,
+      speakerRole: speakerRef.current,
     }
     // Context off (settings): typed phrases translate standalone too.
     if (!useContextRef.current) {
@@ -1242,6 +1348,23 @@ export function useTranslator() {
       setHistoryLoading(false)
     }
   }, [])
+
+  /** Delete ONE saved history entry (text + cached audio; thread messages
+   *  stay but lose their audio link — disclosed behavior). */
+  const deleteHistoryEntry = useCallback(
+    async (id: string): Promise<boolean> => {
+      try {
+        const res = await fetch(`/api/history/${encodeURIComponent(id)}`, { method: 'DELETE' })
+        if (!res.ok) throw new Error('Request failed')
+        setHistory((prev) => (prev ? prev.filter((e) => e.id !== id) : prev))
+        return true
+      } catch {
+        toast({ title: 'Could not delete the entry', variant: 'destructive' })
+        return false
+      }
+    },
+    [toast]
+  )
 
   /**
    * Load the next page of history using the server cursor and append it.
@@ -1649,6 +1772,17 @@ export function useTranslator() {
     loadMoreHistory,
     clearHistory,
     toggleStar,
+    deleteHistoryEntry,
+    // interpreter / auto direction (real bidirectional + manual speaker turns)
+    autoDetect,
+    setAutoDetect,
+    speaker,
+    setSpeaker,
+    availableOtherLangs,
+    betaLangs,
+    setBetaLangs,
+    historyRetentionDays,
+    setHistoryRetentionDays,
     // threads (persistent conversations, spec §5)
     conversations,
     conversationsLoading,

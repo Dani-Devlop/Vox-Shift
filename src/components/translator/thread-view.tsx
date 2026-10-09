@@ -325,6 +325,57 @@ export function ThreadView({
                 This thread only — your global default stays unchanged.
               </p>
             </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                Playback speed
+              </label>
+              <Select
+                value={overrides.playbackRate !== undefined ? String(overrides.playbackRate) : 'inherit'}
+                onValueChange={(v) =>
+                  setOverride(v === 'inherit' ? { playbackRate: undefined } : { playbackRate: Number(v) })
+                }
+              >
+                <SelectTrigger className="h-9 border-zinc-800 bg-zinc-900/70 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-zinc-800 bg-zinc-900">
+                  <SelectItem value="inherit" className="text-xs">
+                    Inherit global
+                  </SelectItem>
+                  {[0.75, 1, 1.25, 1.5].map((r) => (
+                    <SelectItem key={r} value={String(r)} className="text-xs">
+                      ×{r}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-[10px] font-medium uppercase tracking-wide text-zinc-500">
+                Big-button talk
+              </label>
+              <Select
+                value={overrides.bigButton === undefined ? 'inherit' : overrides.bigButton ? 'on' : 'off'}
+                onValueChange={(v) =>
+                  setOverride(v === 'inherit' ? { bigButton: undefined } : { bigButton: v === 'on' })
+                }
+              >
+                <SelectTrigger className="h-9 border-zinc-800 bg-zinc-900/70 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="border-zinc-800 bg-zinc-900">
+                  <SelectItem value="inherit" className="text-xs">
+                    Inherit global
+                  </SelectItem>
+                  <SelectItem value="on" className="text-xs">
+                    On (oversized PTT)
+                  </SelectItem>
+                  <SelectItem value="off" className="text-xs">
+                    Off
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
           {Object.keys(overrides).length > 0 && (
             <button

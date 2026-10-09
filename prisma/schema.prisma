@@ -70,6 +70,12 @@ model VoiceProfile {
   providerModel    String?
   /// Cloner stability 0..1 (higher = steadier, lower = more expressive).
   stability        Float    @default(0.5)
+  /// Provider similarity boost 0..1 (clone mode only; higher = closer match).
+  providerSimilarity Float  @default(0.8)
+  /// Provider style exaggeration 0..0.45 (clone mode only).
+  providerStyle    Float    @default(0.0)
+  /// Number of voice samples merged into this profile (1..3 takes).
+  sampleCount      Int      @default(1)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
