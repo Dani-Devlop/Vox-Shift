@@ -142,6 +142,34 @@ order and reports who actually served:
 - Failures broadcast `provider.failed` / `provider.fallback` realtime events;
   cooldowns are exponential per provider and every attempt is recorded.
 
+### Engine benchmarks (2026-10 model evaluation)
+
+Trending candidates (Hugging Face ASR / translation / TTS leaderboards + voice
+cloning families) were benchmarked on CPU against four criteria: latency,
+accuracy, server-friendliness (RAM), output clarity. Results drive the chain
+above — winners shipped, losers documented:
+
+| Leg | Candidate | Measured | Verdict |
+| --- | --- | --- | --- |
+| ASR · en | **faster-whisper tiny** (CTranslate2 int8) | RTF **0.08**, perfect text with punctuation & casing | ✅ **shipped** — resident warm worker, bundled 75 MB model, lazy spawn + idle unload + free-RAM guard |
+| ASR · en | vosk small en-us 0.15 | RTF 0.22, good text, no punctuation | kept as fallback |
+| ASR · fa | **vosk small fa 0.42** | RTF 0.16, near-perfect Persian | ✅ stays primary for fa |
+| ASR · fa | whisper tiny / base (int8) | RTF ≥ 1.0, garbled Persian at these sizes | rejected |
+| TTS · en | Kokoro-82M (ONNX int8) | RTF 0.51 — noticeably more natural | rejected for the realtime loop (8× slower than piper, ~300 MB RAM); piper keeps the live contract |
+| TTS · en/fa | **piper** en_US-amy / fa_IR-amir | RTF **0.064** / 0.06, clear articulation | ✅ stays — prewarmed worker pool |
+| MT · fa→en | opus-mt community finetune (CT2 int8, ~100 MB) | degenerate repetition loops, 450–2400 ms | rejected |
+| MT · fa→en | NLLB-200-distilled-600M | ~650 MB int8 — exceeds the 954 MB container budget | rejected on server-friendliness |
+| MT · fa→en | **keyless gtx endpoint** | 425–850 ms, perfect on all 5 test sentences | ✅ stays as the keyless tier |
+| Clone | Fish Speech · F5-TTS | prior CPU benchmark RTF ≈ 24; license constraints | rejected |
+| Clone | Chatterbox (MIT) | PyTorch + multi-GB weights > container budget | rejected — cloud ElevenLabs IVC remains the cloning engine |
+
+Integration notes for the winner: `engines/whisper-worker.py` (faster-whisper
+tiny int8, English) speaks the same line-JSON stdio protocol as the piper
+workers; `localASR` routes **fa → vosk, en → faster-whisper → vosk**; the model
+is bundled (`whisper-tiny-ct2/`) so no runtime download or HF reachability is
+required; the worker spawns only on English local-ASR demand (failover tier),
+refuses to spawn under 350 MB free RAM, and unloads after 4 idle minutes.
+
 ## Tech stack
 
 Next.js 16 (App Router) · TypeScript 5 · Tailwind CSS 4 · shadcn/ui (New York)

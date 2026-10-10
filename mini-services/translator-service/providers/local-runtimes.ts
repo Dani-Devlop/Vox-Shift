@@ -48,7 +48,7 @@ const VOSK_MODELS: Record<'fa' | 'en', string> = {
   fa: 'vosk-model-small-fa-0.42',
   en: 'vosk-model-small-en-us-0.15',
 }
-const PIPER_VOICES: Record<'fa' | 'en', string> = {
+export const PIPER_VOICES: Record<'fa' | 'en', string> = {
   fa: 'fa_IR-amir-medium.onnx',
   en: 'en_US-amy-medium.onnx',
 }
@@ -192,12 +192,29 @@ export async function detectLocalRuntimes(): Promise<DetectedLocalRuntimes> {
     })
   }
 
-  // ── whisper.cpp ASR — optional secondary local ASR ───────────────────────
+  // ── whisper ASR — optional secondary local ASR ──────────────────────────
+  // Two real engines are accepted (benchmark 2026-10):
+  //   1. faster-whisper (python, resident warm worker, EN) — preferred when
+  //      importable: tiny/int8 RTF 0.08 on en with punctuation; fa garbles.
+  //   2. whisper.cpp binary + ggml model — original option, unchanged.
   const whisperBin = (await which('whisper-cli')) ?? (await which('whisper.cpp'))
   const ggml = [`${MODELS_ROOT}/ggml-large-v3-turbo.bin`, `${MODELS_ROOT}/ggml-base.bin`].find((p) =>
     existsSync(p)
   )
-  if (whisperBin && ggml) {
+  const fasterWhisperOk = await new Promise<boolean>((res) => {
+    const p = spawn('python3', ['-c', 'import faster_whisper'], { stdio: 'ignore' })
+    p.on('close', (c) => res(c === 0))
+    p.on('error', () => res(false))
+  })
+  if (fasterWhisperOk) {
+    runtimes.push({
+      id: 'local:whisper-asr',
+      name: 'faster-whisper tiny (local ASR, en)',
+      category: 'asr',
+      available: true,
+      model: 'faster-whisper-tiny/int8',
+    })
+  } else if (whisperBin && ggml) {
     runtimes.push({
       id: 'local:whisper-asr',
       name: 'whisper.cpp (local ASR)',
