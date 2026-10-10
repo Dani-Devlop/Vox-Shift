@@ -1,5 +1,11 @@
 # Changelog
 
+## v3.4.0 — Model benchmark round: faster-whisper EN local ASR + benchmark-documented chain
+- **ASR upgrade (en)**: integrated `faster-whisper tiny` (CTranslate2 int8) as the English local ASR engine — RTF 0.08 with punctuation/casing vs vosk-en RTF 0.22 without. Resident warm worker (`engines/whisper-worker.py`, piper-worker protocol), 75 MB model bundled (`whisper-tiny-ct2/`) so no runtime download is needed, lazy spawn on first English failover-ASR demand, refuses to spawn under 350 MB free RAM, unloads after 4 idle minutes. Persian stays on vosk small (whisper tiny/base garble fa, RTF ≥ 1.0 — measured).
+- **Benchmark table in README**: full 2026-10 evaluation of trending HF candidates per leg (ASR / translation / TTS / voice cloning) with measured numbers and honest verdicts — Kokoro-82M rejected for the realtime loop (8× slower than piper), opus-mt finetune rejected (degenerate repetition), NLLB-600M rejected on the 954 MB container budget, Chatterbox/Fish/F5-TTS rejected on RAM/RTF, keyless gtx confirmed near-perfect on the fa→en test set.
+- Runtime detection (`local:whisper-asr`) now accepts faster-whisper (python import probe) in addition to the original whisper.cpp path.
+- Repo page: full README rewrite (feature tour, failover chain, realtime API table, deploy guide), `.env.example` added, About/description + topics updated.
+
 ## v2.2.0 — Voice Contacts, Unknown-Speaker Enrollment & Multi-Provider Routing
 Implemented per the uploaded **FINAL MASTER IMPLEMENTATION PROMPT v2** (`updateV2.2.txt`).
 
