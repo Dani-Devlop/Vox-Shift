@@ -759,7 +759,7 @@ export function LivePanel({ latest, status, activeStage, langPair, partial, live
                     <div className="flex min-w-0 items-center gap-2">
                       <span className="text-base leading-none" aria-hidden>🎤</span>
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-bold text-zinc-100">{activeSpeaker.name ?? activeSpeaker.clusterKey}</div>
+                        <div className="truncate text-sm font-bold text-zinc-100">{activeSpeaker.name ?? 'Unknown Speaker'}</div>
                         <div
                           className={cn(
                             'text-[10px] font-semibold uppercase tracking-[0.12em]',

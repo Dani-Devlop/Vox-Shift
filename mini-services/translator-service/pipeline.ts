@@ -409,9 +409,13 @@ export async function processUtterance(
     const wavBase64 = wav.toString('base64')
     let sourceText = ''
     let asrProvider = 'builtin:zai-asr'
+    // v3.6.0: AUTO mode lets the LOCAL ASR layer detect the language (dual-run
+    // vosk-fa ∥ whisper auto-detect + code-switching merge). The old code
+    // passed autoPair[0] ('fa') unconditionally — English audio was transcribed
+    // by the Persian model, which is why English was "detected" as Persian.
+    const asrLang = req.sourceLang === 'auto' ? 'auto' : req.sourceLang
     const routed = await routedCall<string>('asr', {
-      local: () =>
-        localASR(wavBase64, req.sourceLang === 'auto' ? req.autoPair?.split(',')[0] : req.sourceLang).then((r) => r.text),
+      local: () => localASR(wavBase64, asrLang).then((r) => r.text),
       user: (p) => openAICompatibleASR(p, wavBase64),
       builtin: () => asrEngine.transcribe(wavBase64),
     })

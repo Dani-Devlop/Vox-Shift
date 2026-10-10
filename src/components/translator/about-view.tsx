@@ -61,14 +61,14 @@ const STAGE_LABELS: Record<string, string> = {
 
 const STAGE_ORDER = ['speech', 'translation', 'voice', 'cloneProvider', 'speakerEngine', 'database', 'transport']
 
-const FALLBACK_VERSION = 'v3.5.0'
+const FALLBACK_VERSION = 'v3.6.0'
 
 /** Static honest architecture table — the DESIGN of every engine chain. */
 const ENGINE_CHAINS: Array<{ leg: string; chain: string; note: string }> = [
   {
     leg: 'Speech recognition (ASR)',
-    chain: 'fa → vosk-small · en → faster-whisper-tiny (resident) → vosk-en',
-    note: 'per-language policy registry — new languages register a model path, no core changes; resident worker guarded by ≥ 350 MB free RAM, lazy spawn, 4-min idle unload',
+    chain: 'fa → vosk-small ∥ whisper(auto) + code-switch merge · en → faster-whisper-tiny (resident) → vosk-en',
+    note: 'per-language policy registry — new languages register a model path, no core changes; AUTO mode detects the language at the ASR layer (vosk-fa ∥ multilingual whisper dual-run); mixed Persian+English sentences are merged word-by-word by timestamp; beam decode + VAD for accent robustness',
   },
   {
     leg: 'Translation (LLM)',
@@ -78,7 +78,12 @@ const ENGINE_CHAINS: Array<{ leg: string; chain: string; note: string }> = [
   {
     leg: 'Voice synthesis (TTS)',
     chain: 'piper (fa/en, warm worker pool) → espeak-ng → built-in z-ai',
-    note: 'on-box neural voices for Persian and English; pitch conformance keeps duration invariant while shifting pitch',
+    note: 'on-box neural voices for Persian and English; pitch conformance keeps duration invariant while shifting pitch; "Test my voice" previews run the SAME chains',
+  },
+  {
+    leg: 'Speaker recognition',
+    chain: 'local DSP voiceprint → contact matching → stable Unknown Speaker clusters',
+    note: 'contacts verified BEFORE context/hysteresis (enrolled voices are never swallowed by the previous speaker); short phrases fall back to contact match, then honestly unverified context — no borrowed names',
   },
 ]
 
@@ -153,8 +158,9 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
         </div>
         <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
           Persian ↔ English (plus Deutsch, Français, Español, العربية, Türkçe, Italiano) · Auto-detect
-          two-way direction · Manual speaker turns · Natural / Clean / Literal / Formal / Casual
-          styles · local-first engine chains for ASR / translation / TTS / cloning (v3.5.0) ·
+          two-way direction with ASR-level language detection · code-switching (Persian sentences with
+          embedded English words) · Natural / Clean / Literal / Formal / Casual
+          styles · local-first engine chains for ASR / translation / TTS / cloning (v3.6.0) ·
           persistent resumable conversations · live captions · latency telemetry.
         </p>
       </section>
@@ -442,9 +448,12 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
           <li>
             <span className="font-semibold text-zinc-300">Speaker recognition is local DSP — not a neural model.</span>{' '}
             Voiceprints (pitch register + spectral timbre) are computed on this machine and matched by cosine
-            similarity. Different people are reliably separated; near-identical voices, heavy noise, or a shared
-            microphone can stay honestly <span className="font-mono text-amber-400">Unknown N</span> — the system
-            never guesses a name (Unknown is better than wrong). Ambiguous matches ask you to confirm.
+            similarity. Enrolled contacts are verified BEFORE conversation context, so a short reply from a
+            contact is never mislabeled; different people are reliably separated; near-identical voices, heavy
+            noise, or a shared microphone can stay honestly
+            <span className="font-mono text-amber-400"> Unknown Speaker N</span> — label them with one tap via
+            Identify Person. The system never guesses a name (Unknown is better than wrong). Ambiguous matches
+            ask you to confirm.
           </li>
           <li>
             <span className="font-semibold text-zinc-300">β languages.</span> Persian output is synthesized with the

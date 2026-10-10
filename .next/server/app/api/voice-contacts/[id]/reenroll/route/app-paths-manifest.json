@@ -1,0 +1,3 @@
+{
+  "/api/voice-contacts/[id]/reenroll/route": "app/api/voice-contacts/[id]/reenroll/route.js"
+}

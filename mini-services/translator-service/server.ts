@@ -1,4 +1,4 @@
-import { createServer } from 'http'
+import { createServer, type IncomingMessage, type ServerResponse } from 'http'
 import { Server } from 'socket.io'
 import type { StageEvent as PipelineStageEvent, TextTranslateRequest, TranslationEvent as PipelineTranslationEvent, UtteranceError as PipelineError, UtteranceRequest, UtteranceResult as PipelineResult } from './types'
 import { DEFAULTS } from './types'
@@ -7,6 +7,7 @@ import { SpeakerTracker, type TrackedContact } from './engines/speaker-tracker'
 import { invalidateProviderCache, providerHealthSnapshot, recordTestResult, setRouterEventSink, setRoutingPolicy, getRoutingPolicy, ROUTING_POLICIES } from './providers/router'
 import { pcmToWav } from './engines/audio-utils'
 import { prewarmTTS, ttsWorkerState } from './engines/local-tts'
+import { VoiceIdentityEngine } from './engines/voice'
 import type { SpeakerInfo } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -451,6 +452,133 @@ io.on('connection', (socket) => {
   })
 })
 
+// ─────────────────────────────────────────────────────────────────────────────
+// v3.6.0 — Loopback REST preview endpoint ("Test my voice").
+// The socket.io server owns path '/' (engine.io intercepts EVERY request on
+// that server), so REST gets its OWN loopback-only listener. The Next.js
+// /api/voice-preview route calls it with the profile fields it already
+// resolved + ownership-checked, and this side runs the FULL synthesis chain:
+//   clone mode     → the local-first priority chain (Fish Speech → F5-TTS →
+//                    Chatterbox → ElevenLabs IVC → pitch-conformed, labeled)
+//   voice-match    → routed TTS (local piper → user endpoints → built-in z-ai)
+// This is what makes "Test my voice" work on deployments WITHOUT a z-ai
+// config: the local piper/pitch-conformed engines serve the preview.
+// Security: bound to 127.0.0.1 only — never exposed through the gateway; the
+// caller (app backend) is responsible for auth/ownership.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const REST_PORT = Number(process.env.TRANSLATOR_REST_PORT || 3004)
+
+/** Direction-aware preview sentence so the audition sounds like real usage. */
+const PREVIEW_LINES: Record<string, string> = {
+  en: "Hi! This is how your voice sounds in the translation. Pretty close, right?",
+  fa: 'سلام! این هم صدای شما در ترجمهٔ زنده است. حالا می‌توانید صحبت کنید و انگلیسی را با همین صدا بشنوید.',
+  de: 'Hallo! So klingt deine Stimme in der Übersetzung. Ganz nah dran, oder?',
+  fr: "Salut ! Voilà comment ta voix sonne dans la traduction. Plutôt proche, non ?",
+  es: '¡Hola! Así suena tu voz en la traducción. Bastante parecida, ¿verdad?',
+  ar: 'مرحباً! هكذا تبدو صوتك في الترجمة. قريب جداً، أليس كذلك؟',
+  tr: 'Merhaba! Çeviride sesin böyle görünüyor. Oldukça yakın, değil mi?',
+  it: "Ciao! Questo è come suona la tua voce nella traduzione. Molto simile, vero?",
+}
+
+/** The full identity engine for previews (same chain as realtime synthesis). */
+const previewVoiceEngine = new VoiceIdentityEngine()
+
+function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let size = 0
+    req.on('data', (c: Buffer) => {
+      size += c.length
+      if (size > 2_000_000) {
+        reject(new Error('payload too large'))
+        req.destroy()
+        return
+      }
+      chunks.push(c)
+    })
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as Record<string, unknown>)
+      } catch (e) {
+        reject(e instanceof Error ? e : new Error('invalid JSON body'))
+      }
+    })
+    req.on('error', reject)
+  })
+}
+
+async function handlePreviewVoice(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  res.setHeader('Content-Type', 'application/json')
+  try {
+    const body = await readJsonBody(req)
+    const lang = typeof body.lang === 'string' && PREVIEW_LINES[body.lang] ? body.lang : 'en'
+    const rawCustom = typeof body.text === 'string' ? body.text : ''
+    const custom = rawCustom.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 500)
+    const text = custom || PREVIEW_LINES[lang]
+
+    const num = (v: unknown, lo: number, hi: number, fb: number) => {
+      const n = Number(v)
+      return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : fb
+    }
+    const out = await previewVoiceEngine.synthesize(text, {
+      voice: typeof body.voice === 'string' ? body.voice.slice(0, 40) : 'kazi',
+      speed: num(body.speed, 0.5, 2, 1),
+      pitchRatio: body.pitchRatio === undefined ? undefined : num(body.pitchRatio, 0.75, 1.33, 1),
+      profileMode: body.profileMode === 'clone' || body.profileMode === 'voice-match' ? body.profileMode : undefined,
+      providerProfileId: typeof body.providerProfileId === 'string' ? body.providerProfileId.slice(0, 80) : undefined,
+      providerModel: typeof body.providerModel === 'string' ? body.providerModel.slice(0, 40) : undefined,
+      stability: num(body.stability, 0, 1, 0.5),
+      providerSimilarity: num(body.providerSimilarity, 0, 1, 0.8),
+      providerStyle: num(body.providerStyle, 0, 0.45, 0),
+      lang,
+    })
+    res.statusCode = 200
+    res.end(
+      JSON.stringify({
+        ok: true,
+        audioBase64: out.buffer.toString('base64'),
+        providerId: out.providerId,
+        degraded: out.degraded === true,
+        voiceMode: body.profileMode ?? 'default',
+        cloneAttempts: out.cloneAttempts ?? undefined,
+        lang,
+      })
+    )
+  } catch (err) {
+    const attempts = (err as { cloneAttempts?: unknown }).cloneAttempts
+    res.statusCode = 502
+    res.end(
+      JSON.stringify({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Voice preview synthesis failed',
+        cloneAttempts: attempts ?? undefined,
+      })
+    )
+  }
+}
+
+const restServer = createServer((req, res) => {
+  if (req.method === 'POST' && (req.url ?? '').startsWith('/preview-voice')) {
+    handlePreviewVoice(req, res).catch(() => {
+      if (!res.headersSent) {
+        res.statusCode = 500
+        res.end(JSON.stringify({ ok: false, error: 'internal preview error' }))
+      }
+    })
+    return
+  }
+  // Honest health probe for the app-side diagnostics.
+  if (req.method === 'GET' && (req.url ?? '').startsWith('/healthz')) {
+    res.setHeader('Content-Type', 'application/json')
+    res.statusCode = 200
+    res.end(JSON.stringify({ ok: true, service: 'translator-rest', tts: ttsWorkerState() }))
+    return
+  }
+  res.statusCode = 404
+  res.end(JSON.stringify({ ok: false, error: 'not found' }))
+})
+
 const PORT = 3003
 httpServer.listen(PORT, () => {
   console.log(`[translator] realtime translation service running on port ${PORT}`)
@@ -460,9 +588,17 @@ httpServer.listen(PORT, () => {
   void prewarmTTS(['en', 'fa']).catch(() => undefined)
 })
 
+// Loopback-only REST listener — the app's /api/voice-preview route is the only
+// intended client (auth + profile ownership stay in the Next.js backend).
+restServer.listen(REST_PORT, '127.0.0.1', () => {
+  console.log(`[translator] loopback REST preview endpoint on 127.0.0.1:${REST_PORT}`)
+})
+
 process.on('SIGTERM', () => {
+  restServer.close()
   httpServer.close(() => process.exit(0))
 })
 process.on('SIGINT', () => {
+  restServer.close()
   httpServer.close(() => process.exit(0))
 })

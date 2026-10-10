@@ -38,7 +38,7 @@ export function SpeakerChip({
     ) : null
   }
 
-  const name = info.name ?? 'Unknown'
+  const name = info.name ?? 'Unknown Speaker'
   const pct = typeof info.confidence === 'number' ? Math.round(info.confidence * 100) : null
 
   // ── Ambiguous (spec §14): inline candidate confirmation ───────────────────

@@ -82,6 +82,9 @@ const MAX_SEGMENTS_PER_CLUSTER = 6
 const SHORT_UTTERANCE_SEC = 1.0
 /** Min similarity to attribute a short utterance to the previous speaker. */
 const SHORT_KEEP_THRESHOLD = 0.8
+/** Hysteresis must beat the best OTHER cluster by this margin — one noisy
+ *  frame (or a similar same-gender voice) must not flip speakers. */
+const HYSTERESIS_MARGIN = 0.02
 
 export class SpeakerTracker {
   private contacts: TrackedContact[] = []
@@ -177,6 +180,10 @@ export class SpeakerTracker {
       c && c.vector ? cosineSimilarity(query, c.vector) : 0
 
     // ── 1. Short utterances (spec §15): never spawn a new speaker. ──────────
+    // v3.6.0 fix: a short "بله/نه" from an ENROLLED contact used to inherit
+    // the previous speaker's name (the user's) because contacts were never
+    // checked on the short path. Order now: strong prev-context → contact
+    // verification → honestly unverified context (NO name borrowed).
     if (shortUtterance && prev) {
       const sim = simTo(prev)
       if (sim >= SHORT_KEEP_THRESHOLD) {
@@ -189,57 +196,41 @@ export class SpeakerTracker {
           confidence: this.round(sim),
         }
       }
-      // Weak match — still no new speaker, but honestly unverified context.
+      // Weak prev match — is it an enrolled contact speaking briefly?
+      const shortMatch = matchVoiceprint(
+        query,
+        this.contacts.map((c) => ({ id: c.contactId, name: c.name, vector: c.vector, threshold: c.threshold }))
+      )
+      if (shortMatch.verdict === 'verified' && shortMatch.best) {
+        const contact = this.contacts.find((c) => c.contactId === shortMatch.best!.id)
+        let cluster = this.findClusterByContact(contact!.contactId)
+        if (!cluster) cluster = this.createCluster(now, contact!.contactId, contact!.name)
+        cluster.contactId = contact!.contactId
+        cluster.label = contact!.name
+        this.attachSegment(cluster, audio, now)
+        this.previousKey = cluster.key
+        return {
+          clusterKey: cluster.key,
+          contactId: contact!.contactId,
+          name: contact!.name,
+          status: 'verified',
+          confidence: this.round(shortMatch.best.score),
+        }
+      }
+      // Honestly unverified context — keep the cluster for continuity but do
+      // NOT borrow its name: the UI shows a neutral "Unknown Speaker".
       return {
         clusterKey: prev.key,
         contactId: prev.contactId ?? undefined,
-        name: this.displayNameOf(prev),
+        name: prev.contactId ? this.displayNameOf(prev) : undefined,
         status: 'context',
+        confidence: this.round(sim),
       }
     }
 
-    // ── 2. Hysteresis (spec §16): a stable match to the previous speaker wins
-    //      before contact matching — one noisy frame must not flip speakers.
-    if (prev && !prev.contactId) {
-      const sim = simTo(prev)
-      if (sim >= HYSTERESIS_THRESHOLD) {
-        this.updateCentroid(prev, query)
-        this.attachSegment(prev, audio, now)
-        this.previousKey = prev.key
-        return {
-          clusterKey: prev.key,
-          name: this.displayNameOf(prev),
-          status: 'unknown',
-          confidence: this.round(sim),
-        }
-      }
-    }
-    if (prev?.contactId) {
-      const sim = simTo(prev)
-      if (sim >= HYSTERESIS_THRESHOLD) {
-        // Confirm it is still the best contact — hysteresis never overrides a
-        // clearly better contact match.
-        const match = matchVoiceprint(
-          query,
-          this.contacts.map((c) => ({ id: c.contactId, name: c.name, vector: c.vector, threshold: c.threshold }))
-        )
-        const prevIsBest = match.best?.id === prev.contactId && match.verdict !== 'none'
-        if (prevIsBest || sim >= 0.95) {
-          this.updateCentroid(prev, query)
-          this.attachSegment(prev, audio, now)
-          this.previousKey = prev.key
-          return {
-            clusterKey: prev.key,
-            contactId: prev.contactId,
-            name: this.displayNameOf(prev),
-            status: 'verified',
-            confidence: this.round(sim),
-          }
-        }
-      }
-    }
-
-    // ── 3. Contact matching (spec §13): verified / ambiguous / none. ────────
+    // ── 2. Contact matching FIRST (v3.6.0 reorder, spec §13): verified /
+    //      ambiguous / none. Hysteresis below can no longer swallow an
+    //      enrolled contact into the previous speaker's cluster.
     const match = matchVoiceprint(
       query,
       this.contacts.map((c) => ({ id: c.contactId, name: c.name, vector: c.vector, threshold: c.threshold }))
@@ -260,6 +251,32 @@ export class SpeakerTracker {
         name: contact!.name,
         status: 'verified',
         confidence: this.round(match.best.score),
+      }
+    }
+
+    // ── 3. Hysteresis (spec §16): a stable match to the previous UNKNOWN
+    //      speaker wins before spawning anyone new — one noisy frame must not
+    //      flip speakers. It must also beat every OTHER cluster by a margin,
+    //      which keeps same-gender voices from merging into one person.
+    if (prev && !prev.contactId) {
+      const sim = simTo(prev)
+      let bestOther = 0
+      for (const key of this.order) {
+        if (key === prev.key) continue
+        const c = this.clusters.get(key)
+        const s = c?.vector ? cosineSimilarity(query, c.vector) : 0
+        if (s > bestOther) bestOther = s
+      }
+      if (sim >= HYSTERESIS_THRESHOLD && sim >= bestOther + HYSTERESIS_MARGIN) {
+        this.updateCentroid(prev, query)
+        this.attachSegment(prev, audio, now)
+        this.previousKey = prev.key
+        return {
+          clusterKey: prev.key,
+          name: this.displayNameOf(prev),
+          status: 'unknown',
+          confidence: this.round(sim),
+        }
       }
     }
 
@@ -376,7 +393,7 @@ export class SpeakerTracker {
   private displayNameOf(cluster: Cluster): string {
     if (cluster.label) return cluster.label
     const n = this.order.indexOf(cluster.key) + 1
-    return `Unknown ${n > 0 ? n : this.order.length + 1}`
+    return `Unknown Speaker ${n > 0 ? n : this.order.length + 1}`
   }
 
   private findClusterByContact(contactId: string): Cluster | null {

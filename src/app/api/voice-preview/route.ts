@@ -15,11 +15,19 @@ export const maxDuration = 60
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POST /api/voice-preview — synthesize a short sample sentence so the user can
-// audition their voice profile ("Hear my voice", Voice A/B).
-//   mode 'clone'       → REAL cloned voice via ElevenLabs (profile's voice id)
-//   mode 'voice-match' → pitch-conformed preset (mirrors the realtime engine)
-// Lives in the Next.js backend because it is a one-shot REST call, not part of
-// the streaming pipeline. API keys stay server-side.
+// audition their voice profile ("Test my voice", Voice A/B).
+//
+// v3.6.0 FIX: the old implementation called the built-in z-ai SDK directly,
+// which on deployments without /etc/.z-ai-config threw
+// "configuration file not found or invalid …" for EVERY preview — "Test my
+// voice" was broken there. The route now forwards the (ownership-checked)
+// profile fields to the translator service's loopback REST endpoint, which
+// runs the REAL synthesis chains:
+//   clone mode     → local-first priority chain (Fish Speech → F5-TTS →
+//                    Chatterbox → ElevenLabs IVC → pitch-conformed, labeled)
+//   voice-match    → routed TTS (local piper → user endpoints → built-in z-ai)
+// The legacy paths below are honest LAST-RESORT fallbacks for deployments
+// where the translator service is down but a cloud key exists.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ENGINE_VOICES = ['tongtong', 'chuichui', 'xiaochen', 'jam', 'kazi', 'douji', 'luodo']
@@ -43,6 +51,9 @@ const PREVIEW_LINES: Record<string, string> = {
 const RETRIES = 3
 const BACKOFF_MS = [400, 1200]
 
+/** Loopback REST endpoint of the translator mini-service (v3.6.0). */
+const TRANSLATOR_REST_URL = process.env.TRANSLATOR_REST_URL ?? 'http://127.0.0.1:3004'
+
 // Derive the client type from the factory — `InstanceType<typeof ZAI>` fails
 // because the SDK class declares a private constructor.
 type ZAIClient = Awaited<ReturnType<typeof ZAI.create>>
@@ -50,6 +61,45 @@ let zaiPromise: Promise<ZAIClient> | null = null
 function getZAI() {
   if (!zaiPromise) zaiPromise = ZAI.create()
   return zaiPromise
+}
+
+/** True when the error is the honest "no z-ai config on this box" failure. */
+function isBuiltinUnconfiguredError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /configuration file not found|\.z-ai config|z-ai config/i.test(msg)
+}
+
+interface TranslatorPreviewResult {
+  ok: boolean
+  audioBase64?: string
+  providerId?: string
+  degraded?: boolean
+  voiceMode?: string
+  cloneAttempts?: Array<{ engine: string; ok: boolean; ms?: number; error?: string }>
+  error?: string
+}
+
+/**
+ * Forward the preview to the translator's full synthesis chain. Returns null
+ * when the service is unreachable (caller falls back to the legacy legs).
+ */
+async function viaTranslator(payload: Record<string, unknown>): Promise<TranslatorPreviewResult | null> {
+  try {
+    const res = await fetch(`${TRANSLATOR_REST_URL}/preview-voice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(55_000),
+      cache: 'no-store',
+    })
+    const body = (await res.json()) as TranslatorPreviewResult
+    if (!res.ok || !body.ok || !body.audioBase64) {
+      return { ok: false, error: body.error ?? `translator service returned HTTP ${res.status}` }
+    }
+    return body
+  } catch {
+    return null // translator down / timeout — legacy fallback decides
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -66,7 +116,7 @@ export async function POST(req: NextRequest) {
       .slice(0, MAX_CUSTOM_TEXT_LEN)
     const text = custom || PREVIEW_LINES[lang]
 
-    // ── Cloned profile preview ───────────────────────────────────────────────
+    // ── Cloned / voice-match profile preview ────────────────────────────────
     // Resolve by profileId (ownership-checked) — the client never picks the
     // provider voice id itself.
     const profileId = typeof body?.profileId === 'string' ? body.profileId : ''
@@ -74,6 +124,41 @@ export async function POST(req: NextRequest) {
       const userId = await getOrCreateUserId()
       const profile = await db.voiceProfile.findFirst({ where: { id: profileId, OR: [{ userId }, { userId: null }] } })
       if (!profile) return NextResponse.json({ error: 'Voice profile not found' }, { status: 404 })
+
+      // PRIMARY: the translator's full chain (works with ONLY local engines).
+      const via = await viaTranslator({
+        lang,
+        text,
+        profileMode: profile.mode,
+        voice: profile.mappedVoice,
+        speed: Math.min(2, Math.max(0.5, profile.speedAdjust || 1)),
+        pitchRatio: clampPitchRatio(profile.pitchRatio),
+        providerProfileId: profile.providerProfileId ?? undefined,
+        providerModel: profile.providerModel ?? undefined,
+        stability: profile.stability ?? 0.5,
+        providerSimilarity: profile.providerSimilarity ?? 0.8,
+        providerStyle: profile.providerStyle ?? 0,
+      })
+      if (via?.audioBase64) {
+        return NextResponse.json({
+          audioBase64: via.audioBase64,
+          voice: via.providerId,
+          voiceMode: profile.mode,
+          voiceUsed: via.degraded
+            ? `${profile.name} · pitch-conformed match (NOT a clone)`
+            : `${profile.name} · ${via.providerId}`,
+          degraded: via.degraded === true,
+          cloneAttempts: via.cloneAttempts,
+          lang,
+        })
+      }
+      if (via && !via.audioBase64) {
+        // The chain answered but could not synthesize — surface WHY verbatim.
+        return NextResponse.json({ error: via.error ?? 'Voice preview unavailable' }, { status: 502 })
+      }
+
+      // FALLBACK (translator service down): clone → ElevenLabs direct;
+      // voice-match → z-ai direct with the honest unconfigured message.
       if (profile.mode === 'clone' && profile.providerProfileId) {
         try {
           const wav = await synthesizeCloneVoice(text, {
@@ -111,7 +196,11 @@ export async function POST(req: NextRequest) {
           lang,
         })
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Voice synthesis unavailable'
+        const message = isBuiltinUnconfiguredError(err)
+          ? 'The built-in cloud voice engine is not configured on this deployment, and the translator service (local piper / pitch-conformed engines) is unreachable. Start the translator service to preview your voice locally.'
+          : err instanceof Error
+            ? err.message
+            : 'Voice synthesis unavailable'
         console.error('[voice-preview] voice-match synthesis failed:', message)
         return NextResponse.json({ error: message }, { status: 502 })
       }
@@ -121,6 +210,19 @@ export async function POST(req: NextRequest) {
     const voice = ENGINE_VOICES.includes(body?.voice) ? body.voice : DEFAULT_VOICE
     const ratio = clampPitchRatio(Number.isFinite(Number(body?.pitchRatio)) ? Number(body.pitchRatio) : 1)
     const speed = Math.min(2, Math.max(0.5, (Number(body?.speed) || 1) / ratio))
+    // PRIMARY: translator chain (local piper serves without any cloud config).
+    const via = await viaTranslator({ lang, text, voice, speed: speed * ratio, pitchRatio: ratio })
+    if (via?.audioBase64) {
+      return NextResponse.json({
+        audioBase64: via.audioBase64,
+        voice,
+        voiceMode: ratio === 1 ? ('default' as const) : ('voice-match' as const),
+        voiceUsed: `${voice} ×${ratio.toFixed(2)}${via.providerId ? ` · ${via.providerId}` : ''}`,
+        speed,
+        lang,
+        pitchRatio: ratio,
+      })
+    }
     const wav = await synthPreset(voice, speed, text, ratio)
     return NextResponse.json({
       audioBase64: wav.toString('base64'),
@@ -132,8 +234,13 @@ export async function POST(req: NextRequest) {
       pitchRatio: ratio,
     })
   } catch (error) {
-    console.error('[voice-preview] failed:', error)
-    return NextResponse.json({ error: 'Voice preview failed' }, { status: 500 })
+    const message = isBuiltinUnconfiguredError(error)
+      ? 'The built-in cloud voice engine is not configured on this deployment, and the local preview engines are unreachable (translator service down). The failover chain usually serves previews locally — check that the translator service is running.'
+      : error instanceof Error
+        ? error.message
+        : 'Voice preview failed'
+    console.error('[voice-preview] failed:', message)
+    return NextResponse.json({ error: message }, { status: 502 })
   }
 }
 

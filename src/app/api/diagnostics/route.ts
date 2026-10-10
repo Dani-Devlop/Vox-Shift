@@ -26,7 +26,7 @@ export const maxDuration = 60
 // demo successes, no secrets ever returned.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const APP_VERSION = '3.5.0'
+const APP_VERSION = '3.6.0'
 /**
  * Transport probe target — the translator mini-service directly. The probe
  * performs a REAL engine.io v4 polling handshake (the same first request a
@@ -62,6 +62,21 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/** The honest "no z-ai config on this box" failure — NOT a broken pipeline. */
+const UNCONFIGURED_RE = /configuration file not found|create \.z-ai|\.z-ai config|z-ai config/i
+
+/** Stage report for the built-in cloud engine being unconfigured (v3.6.0):
+ *  labeled 'unconfigured' instead of 'fail' — the failover chains are
+ *  designed to serve without it (local runtimes / keyless gtx tier). */
+function unconfiguredStage(what: string, ms: number): StageReport {
+  return {
+    status: 'unconfigured',
+    ms,
+    code: 'BUILTIN_NOT_CONFIGURED',
+    message: `The built-in z-ai cloud ${what} engine is not configured on this deployment (no .z-ai config file) — by design, this is NOT a failure: the failover chain serves ${what} through the local runtimes and/or the keyless tier. Register a provider in Setup to enable the built-in cloud quality tier.`,
+  }
+}
+
 export async function GET() {
   let providerConfigured = false
   try {
@@ -84,9 +99,9 @@ export async function GET() {
       // Speech recognition — LOCAL-FIRST registry policy (v3.5.0). Adding a
       // language = registerASRLanguage() with its model path; no core changes.
       asr: {
-        engine: 'fa → vosk-small · en → faster-whisper-tiny (resident) → vosk · registry policy',
+        engine: 'fa → vosk-small ∥ whisper(auto)+merge · en → faster-whisper-tiny (resident) → vosk · registry policy',
         configured: true, // the LOCAL legs (vosk/whisper) are the default path
-        mode: 'local-first ASR with per-language policy registry + RAM/idle guards',
+        mode: 'local-first ASR + code-switching merge + ASR-layer language detection',
       },
       // Translation — keyless gtx tier serves the failover chain (benchmarked
       // near-perfect fa→en); the built-in GLM remains the quality tier.
@@ -158,12 +173,14 @@ export async function POST() {
     }
     if (ok) asrWavBase64 = buf.toString('base64')
   } catch (err) {
-    stages.voice = {
-      status: 'fail',
-      ms: Date.now() - tTts,
-      code: errorCode(err),
-      message: `TTS synthesis failed: ${errorMessage(err)}`,
-    }
+    stages.voice = UNCONFIGURED_RE.test(errorMessage(err))
+      ? unconfiguredStage('TTS', Date.now() - tTts)
+      : {
+          status: 'fail' as const,
+          ms: Date.now() - tTts,
+          code: errorCode(err),
+          message: `TTS synthesis failed: ${errorMessage(err)}`,
+        }
   }
 
   // ── Stage 2 — ASR: transcribe the real synthesized audio back ────────────
@@ -171,12 +188,15 @@ export async function POST() {
   // (not faked) when the TTS leg could not produce audio.
   const tAsr = Date.now()
   if (!asrWavBase64) {
-    stages.speech = {
-      status: 'skipped',
-      ms: 0,
-      code: 'DEPENDENCY_FAILED',
-      message: 'Skipped because the TTS stage produced no audio to transcribe. Fix TTS, then re-run.',
-    }
+    stages.speech =
+      stages.voice?.status === 'unconfigured'
+        ? unconfiguredStage('ASR', 0)
+        : {
+            status: 'skipped',
+            ms: 0,
+            code: 'DEPENDENCY_FAILED',
+            message: 'Skipped because the TTS stage produced no audio to transcribe. Fix TTS, then re-run.',
+          }
   } else {
     try {
       const zai = await ZAI.create()
@@ -193,12 +213,14 @@ export async function POST() {
         detail: { transcribed: text.slice(0, 120), expectedPhrase: asrInputText },
       }
     } catch (err) {
-      stages.speech = {
-        status: 'fail',
-        ms: Date.now() - tAsr,
-        code: errorCode(err),
-        message: `Speech recognition failed: ${errorMessage(err)}`,
-      }
+      stages.speech = UNCONFIGURED_RE.test(errorMessage(err))
+        ? unconfiguredStage('ASR', Date.now() - tAsr)
+        : {
+            status: 'fail' as const,
+            ms: Date.now() - tAsr,
+            code: errorCode(err),
+            message: `Speech recognition failed: ${errorMessage(err)}`,
+          }
     }
   }
 
@@ -224,12 +246,14 @@ export async function POST() {
       detail: ok ? { sample: text.trim().slice(0, 60) } : undefined,
     }
   } catch (err) {
-    stages.translation = {
-      status: 'fail',
-      ms: Date.now() - t0,
-      code: errorCode(err),
-      message: `Translation request failed: ${errorMessage(err)}`,
-    }
+    stages.translation = UNCONFIGURED_RE.test(errorMessage(err))
+      ? unconfiguredStage('translation', Date.now() - t0)
+      : {
+          status: 'fail' as const,
+          ms: Date.now() - t0,
+          code: errorCode(err),
+          message: `Translation request failed: ${errorMessage(err)}`,
+        }
   }
 
   // ── Stage 4 — Voice cloning: probe the ACTIVE chain engine (v3.5.0) ──────

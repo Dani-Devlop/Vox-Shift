@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "functions": {
+    "/api/conversations/[id]/speakers": {},
+    "/api/dev-services": {},
+    "/api/diagnostics": {
+      "maxDuration": 60
+    },
+    "/api/history": {},
+    "/api/history/[id]": {},
+    "/api/history/[id]/audio": {},
+    "/api/providers": {},
+    "/api/voice-contacts": {},
+    "/api/voice-contacts/[id]": {},
+    "/api/voice-contacts/[id]/audio": {},
+    "/api/voice-contacts/[id]/reenroll": {},
+    "/api/voice-preview": {
+      "maxDuration": 60
+    },
+    "/api/voice-profile": {
+      "maxDuration": 60
+    }
+  }
+}
