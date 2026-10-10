@@ -4,6 +4,6 @@
   "private": true,
   "scripts": {
     "dev": "python3 index.py",
-    "selftest": "/home/z/ttsbench/bin/python selftest.py"
+    "selftest": "/home/z/.venv/bin/python selftest.py"
   }
 }
