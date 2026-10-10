@@ -15,7 +15,7 @@ own voice** — or reverse the direction (English → Persian). The primary pair
 Persian ↔ English; Deutsch, Français, Español, العربية, Türkçe and Italiano are
 supported on the non-Persian side.
 
-Version **v3.5** · MIT licensed · Next.js 16 + TypeScript · cloud engines with
+Version **v3.6** · MIT licensed · Next.js 16 + TypeScript · cloud engines with
 honest local runtimes as failover.
 
 ---
@@ -49,6 +49,15 @@ honest local runtimes as failover.
   Latin transliteration for learners.
 - **Two-way auto-detect** — speak either language; it is detected and
   translated to the other side (Persian ↔ English), overriding Dub/Interpreter.
+  Detection happens AT THE ASR LAYER (v3.6.0): a dual-engine pass (vosk-fa ∥
+  multilingual faster-whisper auto-detect) decides the language from the audio
+  itself — English utterances are no longer mis-detected as Persian.
+- **Code-switching (mixed fa+en)** — Persian sentences with embedded English
+  words/phrases are transcribed by BOTH engines and merged word-by-word on
+  their timestamps: Persian words come from vosk (near-perfect fa), embedded
+  English words come from whisper (vosk drops them entirely).
+- **Accent-robust English** — faster-whisper decodes with beam search + VAD
+  and no cross-context conditioning for steadier recognition across accents.
 - **Five translation styles** — Natural (default), Clean, Literal, Formal,
   Casual — with optional conversation context carried per phrase.
 - **Presentation mode** — enlarge the current translation for a second screen.
@@ -87,11 +96,18 @@ honest local runtimes as failover.
   the provider clone too), per-thread voice selection.
 - **Test my voice** and **A/B compare** audition your enrolled voice against
   the interpreter default — on the Voice page and on every real translation.
+  Previews run the SAME synthesis chains as the realtime pipeline (v3.6.0),
+  so they work with ONLY local engines installed — no cloud key required.
 
-### Voice contacts & automatic speaker recognition (v2)
+### Voice contacts & automatic speaker recognition (v2, reworked v3.6.0)
 - Local DSP voiceprint (pitch register + spectral timbre) recognizes **who**
-  is speaking: enrolled contacts are named automatically, unknown voices get
-  STABLE temporary labels (`Unknown 1`, `Unknown 2`…) and are never guessed.
+  is speaking: enrolled contacts are verified BEFORE conversation context —
+  a short reply from a contact is never mislabeled as the previous speaker
+  (v3.6.0 fix).
+- Unknown voices get STABLE temporary labels (`Unknown Speaker 1`,
+  `Unknown Speaker 2`…) and are never guessed; weak evidence refuses to
+  borrow a name. Hysteresis must beat every other cluster by a margin, so
+  similar same-gender voices stay separate.
 - Identify an unknown speaker once — the engine assembles their ~10 s of
   captured speech, you verify the sample and save the name — and every future
   session greets them by name (speaker ids stay stable across restarts).
@@ -146,9 +162,12 @@ order and reports who actually served:
   reported; the terminal pitch-conformed level is labeled (`degraded`) so a
   preset match is **never** presented as a clone. Only an enrollment-
   incomplete profile refuses outright (no reference → nothing to clone).
-- **ASR language policy is a registry**: fa → vosk-small, en → faster-whisper
-  tiny (resident) → vosk-en; new languages are added by registering a model
-  path + primary engine (`registerASRLanguage()`), not by new core branches.
+- **ASR language policy is a registry**: fa → vosk-small ∥ whisper(auto) +
+  code-switch merge, en → faster-whisper tiny (resident) → vosk-en; new
+  languages are added by registering a model path + primary engine (+ optional
+  `codeSwitchWith` partner), not by new core branches. Whisper decoding runs
+  beam=2 + VAD for accent robustness; a measured misdetection guard keeps
+  whisper timelines from hijacking pure-Persian audio.
 - **Piper workers are prewarmed** (a resident worker pool with a `voice:prewarm`
   event and auto-prewarm on output-language change) so the first local-TTS
   phrase doesn't pay a cold reload; the Latency card shows the live warm strip.
@@ -336,7 +355,7 @@ APIs and persistence.
 
 ## Version
 
-**v3.5** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
+**v3.6** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
 (v1 single-pair translator → v2 contacts/multi-provider → v3 honest local
 runtimes, chain telemetry, phrasebook at the point of conversation, warm
 worker pool, honest chain tooltips, history filters, benchmark-backed model
