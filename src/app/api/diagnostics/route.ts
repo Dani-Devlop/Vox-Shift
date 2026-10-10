@@ -4,6 +4,7 @@ import { db } from '@/lib/db'
 import { randomUUID } from 'crypto'
 import { cloneConfigured, cloneSetupInstructions, CLONE_ENGINE_ID } from '@/lib/voice/clone-provider'
 import { computeVoiceprint, cosineSimilarity } from '@/lib/speaker/voiceprint'
+import { detectCloneChain } from '@/lib/voice/clone-chain'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -25,7 +26,7 @@ export const maxDuration = 60
 // demo successes, no secrets ever returned.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const APP_VERSION = '2.2.0'
+const APP_VERSION = '3.5.0'
 /**
  * Transport probe target — the translator mini-service directly. The probe
  * performs a REAL engine.io v4 polling handshake (the same first request a
@@ -80,12 +81,22 @@ export async function GET() {
   return NextResponse.json({
     version: APP_VERSION,
     providers: {
-      // One SDK provisions ASR + LLM + TTS — report the shared truth, no secrets.
-      asr: { engine: 'zai-asr', configured: providerConfigured },
-      translation: { engine: 'glm-llm', configured: providerConfigured },
-      voice: { engine: 'zai-tts', configured: providerConfigured, mode: 'voice-match + pitch-conform' },
-      // REAL cloning provider — reported honestly: configured means enrolled
-      // samples are cloned for cross-language synthesis. No secrets returned.
+      // Speech recognition — LOCAL-FIRST registry policy (v3.5.0). Adding a
+      // language = registerASRLanguage() with its model path; no core changes.
+      asr: {
+        engine: 'fa → vosk-small · en → faster-whisper-tiny (resident) → vosk · registry policy',
+        configured: true, // the LOCAL legs (vosk/whisper) are the default path
+        mode: 'local-first ASR with per-language policy registry + RAM/idle guards',
+      },
+      // Translation — keyless gtx tier serves the failover chain (benchmarked
+      // near-perfect fa→en); the built-in GLM remains the quality tier.
+      translation: { engine: 'gtx-tier (keyless) → glm-llm', configured: true },
+      // Voice — piper on-box voices (fa/en) with espeak-ng fallback; zai-tts
+      // is the cloud tier of the TTS chain.
+      voice: { engine: 'piper (fa/en) → espeak-ng → zai-tts', configured: true, mode: 'pitch-conform + speed/duration invariance' },
+      // REAL cloning — the ACTIVE engine of the local-first priority chain.
+      // No secrets returned; setup instructions only when nothing is better
+      // than the terminal DSP level.
       voiceClone: {
         engine: CLONE_ENGINE_ID,
         configured: cloneConfigured(),
@@ -99,8 +110,22 @@ export async function GET() {
         mode: 'pitch + spectral-timbre voiceprint, cosine matching, local-first',
       },
     },
+    // v3.5.0 — the voice-cloning priority chain with REAL gate states and the
+    // resolved ACTIVE engine (Fish Speech → F5-TTS → Chatterbox → ElevenLabs
+    // IVC → pitch-conformed DSP). Rendered verbatim by the About page.
+    voiceCloneChain: await (async () => {
+      try {
+        const c = await detectCloneChain()
+        return { active: c.active, detectedAt: c.detectedAt, chain: c.chain }
+      } catch {
+        return null
+      }
+    })(),
     database: { ok: dbOk, engine: 'sqlite (prisma)' },
-    realtime: { transport: 'socket.io', gateway: 'caddy :81 → :3000 + :3003' },
+    realtime: { transport: 'socket.io', gateway: 'caddy :8081 → :3000 + :3003' },
+    // Built-in Z.ai SDK truth (fail-fast without /etc/.z-ai-config — the
+    // failover chains above are designed to serve without it).
+    builtins: { zaiSdk: providerConfigured },
     serverTime: new Date().toISOString(),
   })
 }
@@ -207,13 +232,15 @@ export async function POST() {
     }
   }
 
-  // ── Stage 4 — Voice clone provider: real account probe when configured ───
-  // Reports the subscription tier + quota so the user can see whether Instant
-  // Voice Cloning is actually available on their plan. Not configured is an
-  // honest separate state — the app works without it in voice-match mode.
+  // ── Stage 4 — Voice cloning: probe the ACTIVE chain engine (v3.5.0) ──────
+  // The local-first priority chain resolves to exactly one engine; this stage
+  // verifies THAT engine with a real request. pitch-conformed (terminal DSP
+  // level) is reported honestly as the labeled not-a-clone fallback.
   const t2 = Date.now()
-  if (cloneConfigured()) {
-    try {
+  try {
+    const chain = await detectCloneChain()
+    const active = chain.chain.find((e) => e.id === chain.active)
+    if (chain.active === 'elevenlabs-ivc' && cloneConfigured()) {
       const res = await fetch('https://api.elevenlabs.io/v1/user', {
         headers: { 'xi-api-key': process.env.ELEVENLABS_API_KEY ?? '' },
         signal: AbortSignal.timeout(10_000),
@@ -233,27 +260,44 @@ export async function POST() {
           status: 'pass',
           ms: Date.now() - t2,
           detail: {
+            activeEngine: 'elevenlabs-ivc',
             tier: body.subscription?.tier ?? 'unknown',
             charactersUsed: body.subscription?.character_count,
             characterLimit: body.subscription?.character_limit,
           },
         }
       }
-    } catch (err) {
+    } else if (chain.active === 'pitch-conformed') {
       stages.cloneProvider = {
-        status: 'fail',
+        status: 'unconfigured',
         ms: Date.now() - t2,
-        code: errorCode(err),
-        message: `Clone provider unreachable: ${errorMessage(err)}`,
+        code: 'NOT_CONFIGURED',
+        message:
+          'No cloning engine is available (local priority chain empty + ELEVENLABS_API_KEY missing) — clone profiles are served by the terminal pitch-conformed preset match and labeled honestly as NOT a clone. Install Fish Speech / F5-TTS / Chatterbox or add the key to upgrade.',
+        detail: {
+          activeEngine: 'pitch-conformed',
+          chain: chain.chain.map((e) => `${e.id}:${e.available ? 'available' : 'unavailable'}`).join(' → '),
+        },
+      }
+    } else {
+      // A LOCAL engine resolved (fish-speech / f5-tts / chatterbox) — the
+      // detection gates (package + weights + RAM) already passed for real.
+      stages.cloneProvider = {
+        status: 'pass',
+        ms: Date.now() - t2,
+        detail: {
+          activeEngine: chain.active,
+          why: active?.why ?? 'detected',
+          weightsPath: active?.weightsPath ?? undefined,
+        },
       }
     }
-  } else {
+  } catch (err) {
     stages.cloneProvider = {
-      status: 'unconfigured',
-      ms: 0,
-      code: 'NOT_CONFIGURED',
-      message:
-        'ELEVENLABS_API_KEY is not set — cloning is honestly disabled. The app still works in voice-match mode; translations use your pitch-conformed match, not a clone.',
+      status: 'fail',
+      ms: Date.now() - t2,
+      code: errorCode(err),
+      message: `Clone chain detection failed: ${errorMessage(err)}`,
     }
   }
 

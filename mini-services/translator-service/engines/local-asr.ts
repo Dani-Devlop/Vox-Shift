@@ -1,11 +1,18 @@
 // ─────────────────────────────────────────────────────────────────────────────
-// LOCAL ASR engine (§14) — vosk python stream (primary) / whisper.cpp (opt).
-// Reconstructed from the v3.0.0 spec after the platform workspace rollback
-// (lost to the local-* gitignore rule — see worklog GH-PUSH-3).
+// LOCAL ASR engine (§14) — policy-registry driven (v3.5.0).
 // API: localASR(wavBase64, lang) → { text } — called by the pipeline's
 // routedCall('asr', { local: … }) with 16 kHz mono WAV input.
-// Model pick is language-aware: fa → vosk-model-small-fa-0.42,
-// en (default) → vosk-model-small-en-us-0.15.
+//
+// LANGUAGE POLICY REGISTRY (v3.5.0 — extensibility contract):
+// Each language declares { primary engine, vosk model dir, whisper size } in
+// ASR_LANGUAGE_POLICIES. Adding a language = registerASRLanguage({ lang,
+// primary, voskModel, … }) — NO core branch changes. Current benchmark-backed
+// policy (2026-10):
+//   fa → vosk small (near-perfect fa, RTF 0.16 — whisper tiny/base garble fa)
+//   en → faster-whisper tiny resident (RTF 0.08, punctuation) → vosk-en
+// whisper.cpp remains a secondary option when its binary + ggml model exist.
+// Operational guards (unchanged): RAM floor ≥ 350 MB for the resident worker,
+// lazy spawn on first demand, 4-min idle unload — mirroring the piper pool.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { spawn } from 'child_process'
@@ -17,9 +24,65 @@ import { existsSync, readFileSync } from 'fs'
 import { detectLocalRuntimes } from '../providers/local-runtimes'
 
 const MODELS_ROOT = process.env.VOXSHIFT_MODELS_DIR || '/home/z/models'
-const VOSK_MODELS: Record<string, string> = {
-  fa: 'vosk-model-small-fa-0.42',
-  en: 'vosk-model-small-en-us-0.15',
+
+// ── ASR language policy registry (v3.5.0) ───────────────────────────────────
+
+export interface ASRLanguagePolicy {
+  /** BCP-47 prefix the policy matches (case-insensitive startsWith). */
+  lang: string
+  /** Engine tried FIRST for this language ('whisper' = resident faster-whisper). */
+  primary: 'vosk' | 'whisper'
+  /** vosk model directory under MODELS_ROOT (vosk is the universal fallback tier). */
+  voskModel: string
+  /** Whisper model size for the resident worker (primary = 'whisper'). */
+  whisperModel?: string
+  /** Measured justification for the policy (surfaced in diagnostics). */
+  benchmarkNote?: string
+}
+
+const ASR_LANGUAGE_POLICIES: ASRLanguagePolicy[] = [
+  {
+    lang: 'fa',
+    primary: 'vosk',
+    voskModel: 'vosk-model-small-fa-0.42',
+    benchmarkNote: 'whisper tiny/base garble fa (RTF ≥ 1.0) — vosk small near-perfect, RTF 0.16',
+  },
+  {
+    lang: 'en',
+    primary: 'whisper',
+    whisperModel: 'tiny',
+    voskModel: 'vosk-model-small-en-us-0.15',
+    benchmarkNote: 'whisper tiny RTF 0.08 with punctuation vs vosk-en RTF 0.22 without',
+  },
+]
+
+/** Default policy for languages with no registered entry (en is the nearest). */
+const ASR_DEFAULT_POLICY_LANG = 'en'
+
+/**
+ * Register (or replace) a language policy — the ONLY step needed to add a new
+ * language to local ASR: drop the vosk/whisper model on disk, then register
+ * its model path here. Unknown request languages resolve to the default.
+ */
+export function registerASRLanguage(policy: ASRLanguagePolicy): void {
+  const normalized: ASRLanguagePolicy = { ...policy, lang: policy.lang.toLowerCase() }
+  const i = ASR_LANGUAGE_POLICIES.findIndex((p) => p.lang === normalized.lang)
+  if (i >= 0) ASR_LANGUAGE_POLICIES[i] = normalized
+  else ASR_LANGUAGE_POLICIES.push(normalized)
+}
+
+/** Read-only snapshot of the active policies (diagnostics / About page). */
+export function asrLanguagePolicies(): readonly ASRLanguagePolicy[] {
+  return ASR_LANGUAGE_POLICIES
+}
+
+function resolveASRPolicy(lang?: string): ASRLanguagePolicy {
+  const l = (lang || ASR_DEFAULT_POLICY_LANG).toLowerCase()
+  return (
+    ASR_LANGUAGE_POLICIES.find((p) => l.startsWith(p.lang)) ??
+    ASR_LANGUAGE_POLICIES.find((p) => p.lang === ASR_DEFAULT_POLICY_LANG) ??
+    ASR_LANGUAGE_POLICIES[0]
+  )
 }
 
 const VOSK_PY = `
@@ -43,12 +106,19 @@ text = ' '.join(t for t in parts if t).strip()
 print(json.dumps({'text': text}))
 `
 
+/** Resolve the vosk model dir for a language FROM THE POLICY REGISTRY. */
 function pickVoskModel(lang: string): string | null {
-  const key = (lang || '').toLowerCase().startsWith('fa') ? 'fa' : 'en'
-  const dir = `${MODELS_ROOT}/${VOSK_MODELS[key]}`
-  if (existsSync(dir)) return dir
-  const other = `${MODELS_ROOT}/${VOSK_MODELS[key === 'fa' ? 'en' : 'fa']}`
-  return existsSync(other) ? other : null
+  const policy = resolveASRPolicy(lang)
+  const preferred = `${MODELS_ROOT}/${policy.voskModel}`
+  if (existsSync(preferred)) return preferred
+  // Preferred dir missing — fall back to ANY registered model that exists
+  // (honest degradation over refusal; the caller surfaces which model served).
+  for (const p of ASR_LANGUAGE_POLICIES) {
+    if (p.lang === policy.lang) continue
+    const dir = `${MODELS_ROOT}/${p.voskModel}`
+    if (existsSync(dir)) return dir
+  }
+  return null
 }
 
 function run(cmd: string, args: string[], input?: string, timeoutMs = 60_000): Promise<{ code: number; out: string; err: string }> {
@@ -152,6 +222,8 @@ interface WhisperWorker {
   proc: ReturnType<typeof spawn>
   ready: Promise<void>
   lastUsed: number
+  /** Model size this worker was booted with (policy may request another). */
+  model: string
 }
 
 let whisperWorker: WhisperWorker | null = null
@@ -181,11 +253,11 @@ function killWhisperWorker(): void {
   }
 }
 
-function spawnWhisperWorker(): WhisperWorker | null {
+function spawnWhisperWorker(modelSize = 'tiny'): WhisperWorker | null {
   if (freeMemMB() < WHISPER_MIN_AVAIL_MB) return null
   const script = join(dirname(fileURLToPath(import.meta.url)), 'whisper-worker.py')
-  const proc = spawn('python3', [script, 'tiny'], { stdio: ['pipe', 'pipe', 'pipe'] })
-  const w: WhisperWorker = { proc, ready: null as unknown as Promise<void>, lastUsed: Date.now() }
+  const proc = spawn('python3', [script, modelSize], { stdio: ['pipe', 'pipe', 'pipe'] })
+  const w: WhisperWorker = { proc, ready: null as unknown as Promise<void>, lastUsed: Date.now(), model: modelSize }
   w.ready = new Promise<void>((resolve, reject) => {
     let buf = ''
     const timer = setTimeout(() => reject(new Error('whisper worker boot timeout')), 30_000)
@@ -228,8 +300,13 @@ function spawnWhisperWorker(): WhisperWorker | null {
   return w
 }
 
-function whisperTranscribe(wavBase64: string, timeoutMs = 30_000): Promise<{ text: string }> {
-  const w = whisperWorker ?? spawnWhisperWorker()
+function whisperTranscribe(wavBase64: string, modelSize = 'tiny', timeoutMs = 30_000): Promise<{ text: string }> {
+  let w = whisperWorker
+  if (w && w.model !== modelSize) {
+    killWhisperWorker() // policy changed the model — respawn with the right one
+    w = null
+  }
+  w = w ?? spawnWhisperWorker(modelSize)
   if (!w) return Promise.reject(new Error('whisper worker declined: not enough free RAM'))
   return w.ready.then(
     () =>
@@ -284,21 +361,21 @@ function whisperTranscribe(wavBase64: string, timeoutMs = 30_000): Promise<{ tex
 
 /**
  * Transcribe 16 kHz mono WAV (base64) with a REAL on-machine engine.
- * Benchmark-backed language policy (2026-10):
- *   fa → vosk small (near-perfect fa, RTF 0.16 — whisper tiny/base garble fa)
- *   en → faster-whisper tiny resident (RTF 0.08, punctuation) → vosk-en
- * whisper.cpp remains a secondary option when its binary + ggml model exist.
+ * Resolved from the LANGUAGE POLICY REGISTRY (v3.5.0):
+ *   primary engine per language → vosk (universal fallback tier) →
+ *   whisper.cpp (secondary option when binary + ggml model exist).
+ * Adding a language = registerASRLanguage() — no new branches here.
  */
 export async function localASR(wavBase64: string, lang = 'en'): Promise<{ text: string }> {
   const rt = await detectLocalRuntimes()
-  const isFa = (lang || '').toLowerCase().startsWith('fa')
+  const policy = resolveASRPolicy(lang)
   const vosk = rt.runtimes.find((r) => r.id === 'local:vosk-asr')
-  if (isFa && vosk?.available) {
-    return voskTranscribe(wavBase64, lang)
-  }
-  if (!isFa && rt.runtimes.find((r) => r.id === 'local:whisper-asr')?.available) {
+  const whisper = rt.runtimes.find((r) => r.id === 'local:whisper-asr')
+  const whisperResident = whisper?.available && policy.primary === 'whisper'
+
+  if (whisperResident) {
     try {
-      return await whisperTranscribe(wavBase64)
+      return await whisperTranscribe(wavBase64, policy.whisperModel ?? 'tiny')
     } catch (err) {
       if (vosk?.available) return voskTranscribe(wavBase64, lang)
       throw err
@@ -307,7 +384,6 @@ export async function localASR(wavBase64: string, lang = 'en'): Promise<{ text: 
   if (vosk?.available) {
     return voskTranscribe(wavBase64, lang)
   }
-  const whisper = rt.runtimes.find((r) => r.id === 'local:whisper-asr')
   if (whisper?.available) {
     return whisperCppTranscribe(wavBase64)
   }

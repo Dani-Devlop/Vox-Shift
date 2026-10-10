@@ -6,6 +6,8 @@
     "dev": "bun --hot server.ts"
   },
   "dependencies": {
+    "@prisma/client": "6.11.1",
+    "prisma": "6.11.1",
     "socket.io": "^4.8.2",
     "z-ai-web-dev-sdk": "^0.0.18"
   }

@@ -15,7 +15,7 @@ own voice** — or reverse the direction (English → Persian). The primary pair
 Persian ↔ English; Deutsch, Français, Español, العربية, Türkçe and Italiano are
 supported on the non-Persian side.
 
-Version **v3.3** · MIT licensed · Next.js 16 + TypeScript · cloud engines with
+Version **v3.5** · MIT licensed · Next.js 16 + TypeScript · cloud engines with
 honest local runtimes as failover.
 
 ---
@@ -67,15 +67,22 @@ honest local runtimes as failover.
 - Threads auto-title from their first message (spoken or typed).
 - Saved-phrase archive (phrasebook) with search, star, filter, export, replay.
 
-### Voice identity (real cloning when configured)
-- Record a sample; with `ELEVENLABS_API_KEY` set, VoxShift performs **real
-  cross-language voice cloning** (ElevenLabs Instant Voice Cloning):
-  translations are synthesized from YOUR enrolled voice — timbre, pitch
-  register and speaking style carried from a Persian reference into English
-  speech.
-- Without the key, enrollment falls back to an honestly-labeled
-  **pitch-conformed match** (closest studio voice, pitch-shifted toward your
-  register, tempo matched — an estimate, never presented as a clone).
+### Voice identity (local-first cloning chain)
+- Cloned profiles are served by a **local-first priority chain** (v3.5.0):
+  **Fish Speech → F5-TTS → Chatterbox → ElevenLabs IVC (cloud) → pitch-conformed
+  match (local DSP)**. Each level's gates are probed for real (python package,
+  model weights on disk, free-RAM floor, API key) and the About page shows the
+  ACTIVE engine live.
+- With `ELEVENLABS_API_KEY` set (and no local engine installed), VoxShift
+  performs **real cross-language voice cloning** (ElevenLabs Instant Voice
+  Cloning): translations are synthesized from YOUR enrolled voice — timbre,
+  pitch register and speaking style carried from a Persian reference into
+  English speech. Enrollment also keeps the reference WAV on-box so a locally
+  installed engine can serve the same profile later.
+- With nothing better than the terminal level, enrollment and synthesis fall
+  back to an honestly-labeled **pitch-conformed match** (closest studio voice,
+  pitch-shifted toward your register, tempo matched — always labeled
+  `pitch-conformed`, never presented as a clone).
 - Multiple persistent profiles: enroll, rename, set default, delete (deletes
   the provider clone too), per-thread voice selection.
 - **Test my voice** and **A/B compare** audition your enrolled voice against
@@ -132,10 +139,16 @@ order and reports who actually served:
 | 3 — local runtime | `local:vosk-asr` (vosk fa/en small models), `local:whisper-asr` if detected | `local:ollama-llm` (if Ollama is running) | `local:piper-tts` (fa_IR-amir / en_US-amy, prewarmed worker pool), `local:espeak-tts` |
 | 4 — keyless | — | `free:gtx-translate` (Google gtx endpoint, no key) | — |
 
-- **Voice identity leg** routes separately: `clone` → ElevenLabs IVC;
-  `voice-match` → pitch-conformed preset. Cloned synthesis **never** silently
-  falls back to a preset voice — failures surface as pipeline errors while the
-  text result still reaches the UI.
+- **Voice identity leg** routes through the local-first cloning chain (v3.5.0):
+  Fish Speech → F5-TTS → Chatterbox (zero-shot local engines, gated by real
+  package + weights + RAM detection) → ElevenLabs IVC → pitch-conformed preset.
+  Every attempt inside the chain is recorded and the ACTUAL engine id is
+  reported; the terminal pitch-conformed level is labeled (`degraded`) so a
+  preset match is **never** presented as a clone. Only an enrollment-
+  incomplete profile refuses outright (no reference → nothing to clone).
+- **ASR language policy is a registry**: fa → vosk-small, en → faster-whisper
+  tiny (resident) → vosk-en; new languages are added by registering a model
+  path + primary engine (`registerASRLanguage()`), not by new core branches.
 - **Piper workers are prewarmed** (a resident worker pool with a `voice:prewarm`
   event and auto-prewarm on output-language change) so the first local-TTS
   phrase doesn't pay a cold reload; the Latency card shows the live warm strip.
@@ -323,10 +336,11 @@ APIs and persistence.
 
 ## Version
 
-**v3.3** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
+**v3.5** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
 (v1 single-pair translator → v2 contacts/multi-provider → v3 honest local
 runtimes, chain telemetry, phrasebook at the point of conversation, warm
-worker pool, honest chain tooltips, history filters).
+worker pool, honest chain tooltips, history filters, benchmark-backed model
+choices, local-first voice-cloning priority chain).
 
 ## License
 

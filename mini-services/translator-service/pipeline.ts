@@ -14,6 +14,7 @@ import { LLMTranslationEngine, parseAutoPair, buildSystemPrompt, buildUserPrompt
 import { VoiceIdentityEngine } from './engines/voice'
 import { openAICompatibleASR, openAICompatibleChat, routedCall } from './providers/router'
 import { detectLocalRuntimes } from './providers/local-runtimes'
+import { gtxTranslateFull, gtxTranslateAuto, GTX_LANGS } from './engines/keyless-translate'
 import { pcmToWav } from './engines/audio-utils'
 import { computeVoiceprint } from '../../src/lib/speaker/voiceprint'
 import type { SpeakerTracker } from './engines/speaker-tracker'
@@ -203,7 +204,7 @@ async function translateAndSpeak(
   let effectiveTarget = req.targetLang
   let translateProvider = 'builtin:zai-llm'
 
-  /** Routed explicit-direction translation (LOCAL → user providers → built-in GLM). */
+  /** Routed explicit-direction translation (LOCAL → user providers → built-in GLM → keyless gtx). */
   const routedTranslate = async (history?: TranslationContextTurn[]): Promise<string> => {
     const system = buildSystemPrompt(req.sourceLang, req.targetLang, req.style)
     const user = buildUserPrompt(sourceText, history, toSpeakerContext(req.speaker))
@@ -216,6 +217,10 @@ async function translateAndSpeak(
         style: req.style,
         history,
       }),
+      // Keyless gtx last resort — only when the pair is servable by the tier.
+      keyless: (GTX_LANGS as readonly string[]).includes(req.targetLang)
+        ? () => gtxTranslateFull(sourceText, req.sourceLang, req.targetLang).then((r) => r.text)
+        : undefined,
     })
     translateProvider = res.providerId
     return res.value
@@ -235,6 +240,15 @@ async function translateAndSpeak(
           history,
           candidates: pairAuto ? [pairA, pairB] : undefined,
         }).then((r) => `DETECTED: ${r.detectedLang}\nTRANSLATION: ${r.text}`),
+      // Keyless gtx last resort (detect + translate in one endpoint call).
+      keyless: (GTX_LANGS as readonly string[]).includes(pairAuto ? pairA : req.targetLang)
+        ? () =>
+            gtxTranslateAuto(
+              sourceText,
+              pairAuto ? pairA : req.targetLang,
+              pairAuto ? [pairA, pairB] : undefined
+            ).then((r) => `DETECTED: ${r.detectedLang}\nTRANSLATION: ${r.text}`)
+        : undefined,
     })
     translateProvider = res.providerId
     const parsed = parseAutoReply(res.value, pairAuto ? [pairA, pairB] : undefined)
@@ -320,6 +334,7 @@ async function translateAndSpeak(
   let audioBase64 = ''
   let audioFormat: 'wav' | 'mp3' = 'wav'
   let ttsProvider = 'builtin:zai-tts'
+  let cloneDegraded = false
   try {
     const synth = await voiceEngine.synthesize(translatedText, {
       voice: req.voice,
@@ -336,6 +351,7 @@ async function translateAndSpeak(
     audioBase64 = synth.buffer.toString('base64')
     audioFormat = synth.format
     ttsProvider = synth.providerId
+    cloneDegraded = synth.degraded === true
   } catch (err) {
     handlers.onStage({ utteranceId, stage: 'tts', status: 'error' })
     handlers.onError({
@@ -356,7 +372,9 @@ async function translateAndSpeak(
   }
   const ttsMs = Date.now() - t1
   handlers.onStage({ utteranceId, stage: 'tts', status: 'done', ms: ttsMs })
-  handlers.onEvent?.({ type: 'tts.completed', utteranceId, ms: ttsMs, providerId: ttsProvider })
+  // degraded: the clone profile was served by the terminal pitch-conformed
+  // level — the UI labels the audio honestly as NOT a clone.
+  handlers.onEvent?.({ type: 'tts.completed', utteranceId, ms: ttsMs, providerId: ttsProvider, degraded: cloneDegraded })
 
   handlers.onResult({
     ...baseResult({ ...req, sourceLang: effectiveSource, targetLang: effectiveTarget }),

@@ -12,6 +12,8 @@ import {
   pcmToWav,
   CLONE_ENGINE_ID,
 } from '@/lib/voice/clone-provider'
+import { mkdir, writeFile } from 'fs/promises'
+import path from 'path'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
@@ -221,6 +223,23 @@ export async function POST(req: NextRequest) {
         sampleCount: allPcms.length,
       },
     })
+
+    // Persist the reference WAV ON-BOX keyed by the provider voice id so the
+    // LOCAL zero-shot clone engines (Fish Speech / F5-TTS / Chatterbox) can
+    // serve this profile later if they become available — the local-first
+    // chain (v3.5.0) resolves the reference at synthesis time. Best-effort:
+    // a write failure never fails the enrollment (ElevenLabs already holds a
+    // copy; voice-match needs no reference).
+    if (clone && allPcms.length > 0) {
+      try {
+        const refDir = path.join(process.cwd(), 'db', 'audio', 'clone-ref')
+        await mkdir(refDir, { recursive: true })
+        const refWav = pcmToWav(Buffer.from(allPcms[0].buffer, allPcms[0].byteOffset, allPcms[0].byteLength), sampleRate)
+        await writeFile(path.join(refDir, `${clone.providerProfileId}.wav`), refWav)
+      } catch (err) {
+        console.error('[voice-profile] reference WAV persist failed (non-fatal):', err instanceof Error ? err.message : err)
+      }
+    }
     const profiles = await db.voiceProfile.findMany({
       where: { userId },
       orderBy: [{ isActive: 'desc' }, { createdAt: 'desc' }],

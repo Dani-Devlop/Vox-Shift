@@ -1,10 +1,11 @@
 'use client'
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AboutView (spec §14 + §16) — version, provider status (no secrets), live
-// pipeline self-test with REAL per-stage requests (status · duration · error
-// code · explainable message), client transport state, and an honest
-// known-limitations list. No invented values, no demo successes.
+// AboutView (spec §14 + §16, v3.5.0) — version, engine chains (ASR policy
+// registry · translation · TTS · voice-cloning priority chain with the ACTIVE
+// engine), provider status (no secrets), live pipeline self-test with REAL
+// per-stage requests, client transport state, and an honest known-limitations
+// list. No invented values, no demo successes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useCallback, useEffect, useState } from 'react'
@@ -13,9 +14,21 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import type { SpeakerRole } from '@/types/translator'
 
+interface CloneChainEntryData {
+  id: string
+  name: string
+  cls: 'local' | 'cloud' | 'dsp'
+  available: boolean
+  why: string
+  minRamMb: number
+  weightsPath?: string | null
+}
+
 interface DiagnosticsData {
   version: string
   providers: Record<string, { engine: string; configured: boolean; mode?: string }>
+  voiceCloneChain?: { active: string; detectedAt: string; chain: CloneChainEntryData[] } | null
+  builtins?: { zaiSdk?: boolean }
   database: { ok: boolean; engine: string }
   realtime: { transport: string; gateway: string }
   serverTime: string
@@ -40,7 +53,7 @@ const STAGE_LABELS: Record<string, string> = {
   speech: 'Speech recognition (ASR)',
   translation: 'Translation (LLM)',
   voice: 'Voice synthesis (TTS)',
-  cloneProvider: 'Voice cloning provider',
+  cloneProvider: 'Voice cloning (active chain engine)',
   speakerEngine: 'Speaker recognition engine (local)',
   database: 'Database (write → read → delete)',
   transport: 'Realtime transport (translator service)',
@@ -48,7 +61,32 @@ const STAGE_LABELS: Record<string, string> = {
 
 const STAGE_ORDER = ['speech', 'translation', 'voice', 'cloneProvider', 'speakerEngine', 'database', 'transport']
 
-const VERSION_LABEL = 'v2.2.0'
+const FALLBACK_VERSION = 'v3.5.0'
+
+/** Static honest architecture table — the DESIGN of every engine chain. */
+const ENGINE_CHAINS: Array<{ leg: string; chain: string; note: string }> = [
+  {
+    leg: 'Speech recognition (ASR)',
+    chain: 'fa → vosk-small · en → faster-whisper-tiny (resident) → vosk-en',
+    note: 'per-language policy registry — new languages register a model path, no core changes; resident worker guarded by ≥ 350 MB free RAM, lazy spawn, 4-min idle unload',
+  },
+  {
+    leg: 'Translation (LLM)',
+    chain: 'user providers → keyless gtx tier → built-in GLM',
+    note: 'gtx tier benchmarked near-perfect on the fa→en test set at 0.4-0.9 s; routing policy + automatic failover per provider',
+  },
+  {
+    leg: 'Voice synthesis (TTS)',
+    chain: 'piper (fa/en, warm worker pool) → espeak-ng → built-in z-ai',
+    note: 'on-box neural voices for Persian and English; pitch conformance keeps duration invariant while shifting pitch',
+  },
+]
+
+const CLONE_CLASS_LABEL: Record<string, string> = {
+  local: 'LOCAL',
+  cloud: 'CLOUD',
+  dsp: 'DSP',
+}
 
 export function AboutView({ connected, speaker }: { connected?: boolean; speaker?: SpeakerRole }) {
   const [diag, setDiag] = useState<DiagnosticsData | null>(null)
@@ -92,6 +130,9 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
     }
   }, [])
 
+  const versionLabel = diag?.version ? `v${diag.version}` : FALLBACK_VERSION
+  const chain = diag?.voiceCloneChain
+
   return (
     <div className="lt-enter mx-auto flex max-w-3xl flex-col gap-6">
       {/* ── Version ───────────────────────────────────────────────────── */}
@@ -103,7 +144,7 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
             </span>
             <div>
               <h2 className="text-base font-black tracking-tight text-white">
-                VoxShift <span className="font-mono text-xs font-bold text-emerald-400">{VERSION_LABEL}</span>
+                VoxShift <span className="font-mono text-xs font-bold text-emerald-400">{versionLabel}</span>
               </h2>
               <p className="text-[11px] text-zinc-500">Real-time bidirectional speech translation with voice identity</p>
             </div>
@@ -113,9 +154,93 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
         <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
           Persian ↔ English (plus Deutsch, Français, Español, العربية, Türkçe, Italiano) · Auto-detect
           two-way direction · Manual speaker turns · Natural / Clean / Literal / Formal / Casual
-          styles · pitch-conformed Voice Match + real ElevenLabs cloning · persistent resumable
-          conversations · live captions · latency telemetry.
+          styles · local-first engine chains for ASR / translation / TTS / cloning (v3.5.0) ·
+          persistent resumable conversations · live captions · latency telemetry.
         </p>
+      </section>
+
+      {/* ── Engine chains (architecture — every leg, honestly ordered) ──── */}
+      <section className="lt-card rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 sm:p-6">
+        <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-zinc-300">Engine chains</h3>
+        <ul className="flex flex-col gap-2">
+          {ENGINE_CHAINS.map((row) => (
+            <li key={row.leg} className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5">
+              <span className="block text-xs font-semibold text-zinc-200">{row.leg}</span>
+              <span className="mt-0.5 block font-mono text-[10px] leading-relaxed text-emerald-400/90">{row.chain}</span>
+              <span className="mt-1 block text-[11px] leading-relaxed text-zinc-500">{row.note}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
+          Every leg is LOCAL-FIRST with automatic failover; the ACTUAL engine that served each
+          phrase is recorded and shown in the session telemetry — no silent substitutions.
+        </p>
+      </section>
+
+      {/* ── Voice cloning priority chain (LIVE detection) ───────────────── */}
+      <section className="lt-card rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 sm:p-6">
+        <header className="mb-1 flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-xs font-bold uppercase tracking-[0.22em] text-zinc-300">Voice cloning priority chain</h3>
+          {chain && (
+            <span className="font-mono text-[10px] text-zinc-600">detected {new Date(chain.detectedAt).toLocaleTimeString()}</span>
+          )}
+        </header>
+        <p className="mb-3 text-[11px] leading-relaxed text-zinc-500">
+          Cloned profiles are served by the first AVAILABLE engine in this order — each gate
+          (python package · model weights · free RAM · API key) is probed for real. The terminal
+          pitch-conformed level is an honest preset match, never presented as a clone.
+        </p>
+        {!chain ? (
+          <div className="flex items-center gap-2 py-3 text-sm text-zinc-500">
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> Probing the chain…
+          </div>
+        ) : (
+          <ol className="flex flex-col gap-2">
+            {chain.chain.map((entry, idx) => {
+              const isActive = entry.id === chain.active
+              return (
+                <li
+                  key={entry.id}
+                  className={cn(
+                    'rounded-xl border px-3 py-2.5 transition-colors',
+                    isActive ? 'border-emerald-900/60 bg-emerald-950/20' : 'border-zinc-800 bg-zinc-900/60'
+                  )}
+                >
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="font-mono text-[10px] text-zinc-600">{idx + 1}</span>
+                      <span className={cn('truncate text-xs font-semibold', isActive ? 'text-emerald-300' : 'text-zinc-200')}>
+                        {entry.name}
+                      </span>
+                      <span className="hidden rounded bg-zinc-800 px-1.5 py-0.5 font-mono text-[9px] font-bold text-zinc-400 sm:inline">
+                        {CLONE_CLASS_LABEL[entry.cls] ?? entry.cls.toUpperCase()}
+                      </span>
+                    </span>
+                    <span
+                      className={cn(
+                        'inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-bold',
+                        isActive
+                          ? 'bg-emerald-500/15 text-emerald-300'
+                          : entry.available
+                            ? 'bg-teal-500/10 text-teal-400'
+                            : 'bg-zinc-700/30 text-zinc-500'
+                      )}
+                    >
+                      {isActive ? <Check className="h-3 w-3" aria-hidden /> : entry.available ? <Check className="h-3 w-3" aria-hidden /> : <MinusCircle className="h-3 w-3" aria-hidden />}
+                      {isActive ? 'ACTIVE' : entry.available ? 'available' : 'unavailable'}
+                    </span>
+                  </div>
+                  <p className="mt-1 truncate font-mono text-[10px] text-zinc-500" title={entry.why}>
+                    {entry.why}
+                  </p>
+                  {entry.cls === 'local' && entry.minRamMb > 0 && (
+                    <p className="mt-0.5 font-mono text-[10px] text-zinc-600">RAM floor ≥ {entry.minRamMb} MB free</p>
+                  )}
+                </li>
+              )
+            })}
+          </ol>
+        )}
       </section>
 
       {/* ── Client transport (what THIS browser actually sees) ─────────── */}
@@ -212,9 +337,10 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
         </header>
         <p className="mb-3 text-[11px] leading-relaxed text-zinc-500">
           Runs REAL requests for every stage: synthesizes a phrase, transcribes it back (ASR
-          round-trip), translates via the LLM, probes the cloning provider account, performs a
-          database write→read→delete, and health-checks the realtime service. Results are measured
-          values — duration, status, error code and an explainable message. Nothing is simulated.
+          round-trip), translates via the LLM, probes the ACTIVE engine of the cloning chain,
+          performs a database write→read→delete, and health-checks the realtime service. Results
+          are measured values — duration, status, error code and an explainable message. Nothing
+          is simulated.
         </p>
         {testing && (
           <div className="mb-3 flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2.5 text-xs text-zinc-400">
@@ -304,11 +430,14 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
         <h3 className="mb-3 text-xs font-bold uppercase tracking-[0.22em] text-zinc-300">Known limitations</h3>
         <ul className="list-disc space-y-1.5 pl-4 text-[11px] leading-relaxed text-zinc-500">
           <li>
-            <span className="font-semibold text-zinc-300">Voice identity has two modes.</span> With{' '}
-            <span className="font-mono text-emerald-400">ELEVENLABS_API_KEY</span> configured,
-            enrollment performs REAL cross-language cloning (ElevenLabs IVC, up to 3 takes merged):
-            the generated speech comes from your enrolled voice. Without the key, the engine uses a
-            pitch-conformed preset match — always labeled honestly, never presented as a clone.
+            <span className="font-semibold text-zinc-300">Voice cloning is a LOCAL-FIRST priority chain.</span> Fish
+            Speech → F5-TTS → Chatterbox (on-box zero-shot engines, used only when their python
+            package AND model weights are installed and the host has enough free RAM) → ElevenLabs
+            IVC (cloud, with <span className="font-mono text-emerald-400">ELEVENLABS_API_KEY</span>) →
+            pitch-conformed preset match (local DSP). When only the terminal level is available, clone
+            profiles are served by the pitch-conformed match and every result is LABELED as not-a-clone
+            (<span className="font-mono text-amber-400">pitch-conformed</span> in the telemetry) — never
+            presented as a clone.
           </li>
           <li>
             <span className="font-semibold text-zinc-300">Speaker recognition is local DSP — not a neural model.</span>{' '}
@@ -318,9 +447,14 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
             never guesses a name (Unknown is better than wrong). Ambiguous matches ask you to confirm.
           </li>
           <li>
-            <span className="font-semibold text-zinc-300">β languages.</span> Persian output and all
-            non-English targets are synthesized with accented engine voices (translation quality is
-            unaffected); English is the only native-quality voice today.
+            <span className="font-semibold text-zinc-300">β languages.</span> Persian output is synthesized with the
+            on-box piper fa voice and all non-English targets may carry accented prosody (translation quality is
+            unaffected); English is the most natural voice today.
+          </li>
+          <li>
+            <span className="font-semibold text-zinc-300">Small containers stay honest about heavy models.</span> The
+            local clone engines demand GB-class RAM/VRAM; on a small host the RAM gate refuses them and the chain
+            falls through — the About page above shows exactly which level is active.
           </li>
           <li>Live-session replays keep the last 12 utterances in memory; Saved Phrases keeps audio server-side per the retention policy.</li>
           <li>Provider rate limits are retried automatically; under sustained limiting, completed phrases remain safe and the failed segment can be retried manually.</li>

@@ -4,8 +4,9 @@ import type { StageEvent as PipelineStageEvent, TextTranslateRequest, Translatio
 import { DEFAULTS } from './types'
 import { processAsrPartial, processTextTranslate, processUtterance, clearSession, type PipelineHandlers, type PipelineEvent } from './pipeline'
 import { SpeakerTracker, type TrackedContact } from './engines/speaker-tracker'
-import { invalidateProviderCache, providerHealthSnapshot, setRouterEventSink, setRoutingPolicy, getRoutingPolicy, ROUTING_POLICIES } from './providers/router'
+import { invalidateProviderCache, providerHealthSnapshot, recordTestResult, setRouterEventSink, setRoutingPolicy, getRoutingPolicy, ROUTING_POLICIES } from './providers/router'
 import { pcmToWav } from './engines/audio-utils'
+import { prewarmTTS, ttsWorkerState } from './engines/local-tts'
 import type { SpeakerInfo } from './types'
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -294,10 +295,17 @@ io.on('connection', (socket) => {
 
   socket.on('providers:health', () => {
     providerHealthSnapshot()
-      .then((providers) => socket.emit('providers:health', { providers, updatedAt: new Date().toISOString() }))
+      .then((providers) =>
+        socket.emit('providers:health', {
+          providers,
+          tts: ttsWorkerState(),
+          updatedAt: new Date().toISOString(),
+        })
+      )
       .catch(() =>
         socket.emit('providers:health', {
           providers: [],
+          tts: ttsWorkerState(),
           updatedAt: new Date().toISOString(),
           error: 'health snapshot unavailable',
         })
@@ -308,6 +316,51 @@ io.on('connection', (socket) => {
     invalidateProviderCache()
     socket.emit('providers:reload-ok')
   })
+
+  // Round-10 language-switch prewarm: when the user picks a new OUTPUT
+  // language we spawn the matching resident piper worker IMMEDIATELY so the
+  // first phrase in that language doesn't pay the 1–2 s cold start. Idempotent
+  // (warmWorkers map) — re-requesting an already-warm voice is a cheap no-op.
+  // Only fa/en have piper voices; other languages fall back honestly.
+  socket.on('voice:prewarm', (data: { lang?: string }, ack?: (r: { ok: boolean; lang?: string; tts?: ReturnType<typeof ttsWorkerState>; error?: string }) => void) => {
+    const lang = data?.lang === 'fa' || data?.lang === 'en' ? data.lang : undefined
+    if (!lang) {
+      ack?.({ ok: false, error: 'no piper voice for this language' })
+      return
+    }
+    prewarmTTS([lang])
+      .then(() => ack?.({ ok: true, lang, tts: ttsWorkerState() }))
+      .catch((err: unknown) =>
+        ack?.({ ok: false, lang, error: err instanceof Error ? err.message : String(err) })
+      )
+  })
+
+  // Manual/auto test verdicts from the Setup card — recorded into the SAME
+  // health map the router uses, so a failing provider stops showing READY
+  // in the chain preview before it costs a real phrase.
+  socket.on(
+    'providers:report-test',
+    (
+      payload: { providerId?: string; ok?: boolean; ms?: number; message?: string },
+      ack?: (r: { ok: boolean }) => void
+    ) => {
+      if (!payload || typeof payload.providerId !== 'string' || !payload.providerId) {
+        ack?.({ ok: false })
+        return
+      }
+      try {
+        recordTestResult(
+          payload.providerId,
+          payload.ok === true,
+          Number(payload.ms) || 0,
+          typeof payload.message === 'string' ? payload.message : undefined
+        )
+        ack?.({ ok: true })
+      } catch {
+        ack?.({ ok: false })
+      }
+    }
+  )
 
   // ── v3 §25: live routing-policy switch (Settings → Routing policy card).
   // The policy is service-wide (it shapes every provider chain); the change is
@@ -401,6 +454,10 @@ io.on('connection', (socket) => {
 const PORT = 3003
 httpServer.listen(PORT, () => {
   console.log(`[translator] realtime translation service running on port ${PORT}`)
+  // Best-effort: prewarm BOTH resident piper voices (English + Persian) so the
+  // first phrase in either direction after a deploy/restart is already fast.
+  // Measured cost ≈180MB RSS per worker — fits the container RAM budget.
+  void prewarmTTS(['en', 'fa']).catch(() => undefined)
 })
 
 process.on('SIGTERM', () => {

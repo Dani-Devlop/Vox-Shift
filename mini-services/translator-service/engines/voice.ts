@@ -2,17 +2,24 @@ import { getZAI } from './asr'
 import { resampleWav } from './audio-utils'
 import { openAICompatibleTTS, routedCall } from '../providers/router'
 import { ElevenLabsCloneEngine, cloneProviderConfigured } from './voice-clone'
+import { detectCloneChain, type CloneEngineId } from '../../../src/lib/voice/clone-chain'
+import { cloneRefWavPath, isLocalCloneEngine, localCloneSynthesize } from './clone-workers'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Voice Engine — Voice identity / synthesis layer (fully separate from translation)
 //
-// TWO implementations behind one router:
-//   1. ElevenLabsCloneEngine — REAL cross-language voice cloning (IVC). Used
-//      when the profile mode is 'clone' and ELEVENLABS_API_KEY is configured.
-//      It NEVER silently falls back to a preset voice: failures surface as
-//      pipeline errors (text still delivered, audio honestly absent).
-//   2. ZaiVoiceEngine — pitch-conformed preset matching (the previous engine,
-//      kept as the honest 'voice-match' mode when cloning is not configured).
+// Engines behind one router:
+//   1. LOCAL-FIRST CLONE CHAIN (v3.5.0) — clone-mode profiles are served in
+//      priority order: Fish Speech → F5-TTS → Chatterbox (all zero-shot LOCAL
+//      engines, gated by real package+weights+RAM detection) → ElevenLabs IVC
+//      (cloud) → pitch-conformed match (local DSP, terminal level, always
+//      LABELED as not-a-clone via degraded: true). Every attempt is recorded
+//      and the ACTUAL engine id is returned — no silent substitutions.
+//   2. local-openvoice — the explicit on-box OpenVoice tone-color conversion
+//      (v3.3.1) stays the honored choice when a profile selected it.
+//   3. ZaiVoiceEngine — pitch-conformed preset matching for 'voice-match'
+//      profiles and the multi-provider TTS chain (local piper/espeak → user
+//      endpoints → built-in z-ai) for preset/default voices.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const ENGINE_VOICES = ['tongtong', 'chuichui', 'xiaochen', 'jam', 'kazi', 'douji', 'luodo'] as const
@@ -108,9 +115,32 @@ export interface IdentitySynthesisOptions {
   lang?: string
 }
 
+/** One recorded attempt inside the clone chain (honest failover trail). */
+export interface CloneChainAttempt {
+  engine: string
+  ok: boolean
+  ms?: number
+  error?: string
+}
+
+export interface IdentitySynthesisResult {
+  buffer: Buffer
+  format: 'wav' | 'mp3'
+  /** WHO actually served — one of: local-openvoice, fish-speech, f5-tts,
+   *  chatterbox, elevenlabs-ivc, pitch-conformed, or the routed TTS ids. */
+  providerId: string
+  /** TRUE when a clone-mode request was served by the terminal DSP level
+   *  (pitch-conformed preset match) — the UI must label it as NOT a clone. */
+  degraded?: boolean
+  /** Real failover trail across the clone chain (present in clone mode). */
+  cloneAttempts?: CloneChainAttempt[]
+}
+
 /**
  * Router that dispatches synthesis to the right engine based on the profile's
- * declared mode. Cloned profiles go to the real cloning provider — always.
+ * declared mode. Cloned profiles are served by the LOCAL-FIRST priority chain
+ * (v3.5.0): Fish Speech → F5-TTS → Chatterbox → ElevenLabs IVC → pitch-
+ * conformed match — every attempt recorded, the ACTUAL engine reported.
  * Preset/default voices go through the multi-provider TTS chain first
  * (user-registered OpenAI-compatible endpoints) with the built-in z-ai
  * engine as the honest final fallback. Every result records WHO served it.
@@ -123,17 +153,18 @@ export class VoiceIdentityEngine {
   async synthesize(
     text: string,
     opts: IdentitySynthesisOptions
-  ): Promise<{ buffer: Buffer; format: 'wav' | 'mp3'; providerId: string }> {
+  ): Promise<IdentitySynthesisResult> {
     if (opts.profileMode === 'clone') {
-      // ── LOCAL clone (v3.3.1, Architecture C): base TTS → OpenVoice tone-color
-      // conversion toward the enrolled speaker. Selected via providerModel
-      // 'local-openvoice'; measured on CPU in voxshift-ml/bench.
+      // Enrollment completeness is a PROFILE problem, not an availability
+      // problem — it still refuses honestly (no reference → nothing to clone).
+      if (!opts.providerProfileId) {
+        throw new Error(
+          'This voice profile has no provider voice id (enrollment incomplete). Re-enroll the sample or switch profiles — no fallback voice was used.'
+        )
+      }
+      // Explicit on-box engine choice (v3.3.1) is honored first: base TTS →
+      // OpenVoice tone-color conversion toward the enrolled speaker.
       if (opts.providerModel === 'local-openvoice') {
-        if (!opts.providerProfileId) {
-          throw new Error(
-            'Local-clone profile has no speaker id (local enrollment incomplete). Re-enroll the sample — no fallback voice was used.'
-          )
-        }
         const { localCloneConvert } = await import('../../../src/lib/voice/local-clone')
         // base synthesis reuses the routed LOCAL branch (piper → espeak) so the
         // base acoustics match the target language; conversion adds the timbre.
@@ -158,26 +189,8 @@ export class VoiceIdentityEngine {
         const converted = await localCloneConvert(opts.providerProfileId, base.value.buffer)
         return { buffer: converted, format: 'wav', providerId: 'local-openvoice' }
       }
-      // ── CLOUD clone (ElevenLabs IVC) — unchanged behavior:
-      if (!opts.providerProfileId) {
-        throw new Error(
-          'This voice profile has no provider voice id (enrollment incomplete). Re-enroll the sample or switch profiles — no fallback voice was used.'
-        )
-      }
-      if (!cloneProviderConfigured()) {
-        throw new Error(
-          'Voice cloning provider is not configured (ELEVENLABS_API_KEY missing) — your cloned profile was NOT used and the default voice was deliberately NOT substituted. Add the key to /home/z/my-project/.env and restart both services, or switch to a Voice Match profile.'
-        )
-      }
-      const buffer = await this.cloneEngine.synthesize(text, {
-        providerProfileId: opts.providerProfileId,
-        speed: opts.speed,
-        providerModel: opts.providerModel,
-        stability: opts.stability,
-        similarityBoost: opts.providerSimilarity,
-        styleExaggeration: opts.providerStyle,
-      })
-      return { buffer, format: 'wav', providerId: 'elevenlabs-ivc' }
+      // Everything else → the local-first priority chain.
+      return this.synthesizeCloneChain(text, opts)
     }
     // 'voice-match' (and any legacy payload without a mode) → multi-provider
     // TTS chain with policy ordering (LOCAL/SERVER/CLOUD/CUSTOM, v3 §25):
@@ -202,5 +215,78 @@ export class VoiceIdentityEngine {
       },
     })
     return { buffer: routed.value.buffer, format: routed.value.format, providerId: routed.providerId }
+  }
+
+  /**
+   * LOCAL-FIRST clone chain (v3.5.0). Serves a clone-mode profile by walking
+   * the detected availability chain and reporting the ACTUAL engine. A local
+   * engine that fails AT SYNTHESIS TIME is recorded and the next level gets
+   * the request — automatic failover, the same contract as every other
+   * category in the router. The terminal level (pitch-conformed) serves with
+   * degraded: true so the UI can label the result as NOT a clone.
+   */
+  private async synthesizeCloneChain(
+    text: string,
+    opts: IdentitySynthesisOptions
+  ): Promise<IdentitySynthesisResult> {
+    const attempts: CloneChainAttempt[] = []
+    const chain = await detectCloneChain()
+
+    // ── Priorities 1-3: LOCAL zero-shot engines (reference audio required) ──
+    for (const entry of chain.chain.filter((e) => e.available && isLocalCloneEngine(e.id))) {
+      const engine = entry.id as Extract<CloneEngineId, 'fish-speech' | 'f5-tts' | 'chatterbox'>
+      const refPath = cloneRefWavPath(opts.providerProfileId)
+      if (!refPath) {
+        attempts.push({ engine, ok: false, error: 'no reference WAV on disk for this profile — re-enroll to use local engines' })
+        continue
+      }
+      const t0 = Date.now()
+      try {
+        const out = await localCloneSynthesize(engine, text, refPath)
+        attempts.push({ engine, ok: true, ms: Date.now() - t0 })
+        return { buffer: out.buffer, format: 'wav', providerId: engine, degraded: false, cloneAttempts: attempts }
+      } catch (err) {
+        attempts.push({ engine, ok: false, ms: Date.now() - t0, error: err instanceof Error ? err.message : String(err) })
+      }
+    }
+
+    // ── Priority 4: ElevenLabs IVC (cloud) — the existing real clone path ──
+    if (cloneProviderConfigured()) {
+      const t1 = Date.now()
+      try {
+        const buffer = await this.cloneEngine.synthesize(text, {
+          providerProfileId: opts.providerProfileId!,
+          speed: opts.speed,
+          providerModel: opts.providerModel,
+          stability: opts.stability,
+          similarityBoost: opts.providerSimilarity,
+          styleExaggeration: opts.providerStyle,
+        })
+        attempts.push({ engine: 'elevenlabs-ivc', ok: true, ms: Date.now() - t1 })
+        return { buffer, format: 'wav', providerId: 'elevenlabs-ivc', degraded: false, cloneAttempts: attempts }
+      } catch (err) {
+        attempts.push({ engine: 'elevenlabs-ivc', ok: false, ms: Date.now() - t1, error: err instanceof Error ? err.message : String(err) })
+      }
+    } else {
+      attempts.push({ engine: 'elevenlabs-ivc', ok: false, error: 'ELEVENLABS_API_KEY not configured' })
+    }
+
+    // ── Priority 5 (terminal): pitch-conformed preset match — LABELED ──────
+    // Not a clone: the result is honest DSP conformance of a preset voice and
+    // every consumer sees degraded: true + providerId 'pitch-conformed'.
+    try {
+      const buffer = await this.matchEngine.synthesize(text, {
+        voice: opts.voice,
+        speed: opts.speed,
+        pitchRatio: opts.pitchRatio,
+      })
+      return { buffer, format: 'wav', providerId: 'pitch-conformed', degraded: true, cloneAttempts: attempts }
+    } catch (err) {
+      // Terminal level failed too — surface the WHOLE trail on the error so
+      // server logs/diagnostics can show exactly how far the chain walked.
+      const e = err instanceof Error ? err : new Error(String(err))
+      ;(e as Error & { cloneAttempts?: CloneChainAttempt[] }).cloneAttempts = attempts
+      throw e
+    }
   }
 }

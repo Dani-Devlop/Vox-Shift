@@ -23,6 +23,7 @@ import { readFileSync } from 'fs'
 
 import type { DetectedLocalRuntimes, LocalRuntimeStatus } from './local-runtimes'
 import { detectLocalRuntimes, invalidateLocalRuntimeCache } from './local-runtimes'
+import { detectCloneChain } from '../../../src/lib/voice/clone-chain'
 
 export type ProviderCategory = 'asr' | 'translate' | 'llm' | 'tts'
 export type ProviderClass = 'local' | 'server' | 'cloud' | 'custom'
@@ -311,6 +312,21 @@ function markFailure(providerId: string, err: unknown): void {
   })
 }
 
+/**
+ * Record an explicit test verdict from the Setup card (socket
+ * `providers:report-test`) into the SAME health map the router uses — READY on
+ * success; a classifyError-mapped state + consecutiveFailures++ on failure, so
+ * a failing provider stops showing READY in the chain preview BEFORE it costs
+ * a real phrase (round-9 honesty fix; restored during the v3.5.0 reconciliation).
+ */
+export function recordTestResult(providerId: string, ok: boolean, ms: number, message?: string): void {
+  if (ok) {
+    markSuccess(providerId, Math.max(0, ms))
+    return
+  }
+  markFailure(providerId, new Error(message || 'test failed'))
+}
+
 function healthOf(row: ProviderRow, now: number): ProviderHealth {
   const h = health.get(row.id)
   let state = h?.state ?? 'READY'
@@ -413,34 +429,81 @@ export async function providerHealthSnapshot(): Promise<ProviderHealth[]> {
     })
   }
 
-  // Voice cloning (CLOUD — ElevenLabs IVC; honest when unconfigured).
-  const cloneKey = envValue('ELEVENLABS_API_KEY')
-  const cloneHealth = health.get('builtin:elevenlabs-clone')
+  // Keyless gtx tier (translate) — free public endpoint, no key, last-resort.
+  const g = health.get('free:gtx-translate')
   out.push({
-    providerId: 'builtin:elevenlabs-clone',
-    name: 'ElevenLabs Instant Voice Cloning (built-in)',
-    category: 'voice-cloning',
-    kind: 'builtin',
+    providerId: 'free:gtx-translate',
+    name: 'Keyless gtx translate (free tier)',
+    category: 'translate',
+    kind: 'keyless-endpoint',
     class: 'cloud',
     enabled: true,
-    state: cloneKey ? (cloneHealth?.state ?? 'READY') : 'NOT_CONFIGURED',
-    lastError: cloneKey ? cloneHealth?.lastError : 'ELEVENLABS_API_KEY not configured — voice cloning is unavailable (honest state)',
-    lastCheckedAt: cloneHealth?.lastCheckedAt ? new Date(cloneHealth.lastCheckedAt).toISOString() : undefined,
-    consecutiveFailures: cloneHealth?.consecutiveFailures ?? 0,
+    state: g?.state ?? 'READY',
+    lastError: g?.lastError,
+    lastCheckedAt: g?.lastCheckedAt ? new Date(g.lastCheckedAt).toISOString() : undefined,
+    consecutiveFailures: g?.consecutiveFailures ?? 0,
+    lastMs: g?.lastMs,
   })
-  // LOCAL voice cloning has no compatible engine on this machine — honest.
-  out.push({
-    providerId: 'local:voice-cloning',
-    name: 'Local voice cloning (F5-TTS / XTTS / CosyVoice)',
-    category: 'voice-cloning',
-    kind: 'local-runtime',
-    class: 'local',
-    enabled: true,
-    state: 'NOT_CONFIGURED',
-    lastError:
-      'No compatible local cloning engine installed. XTTS/F5-TTS need multi-GB models + a GPU-class machine — install one and register it as a Server provider to enable.',
-    consecutiveFailures: 0,
-  })
+
+  // Voice cloning (v3.5.0 — LOCAL-FIRST priority chain, honest per level):
+  // Fish Speech → F5-TTS → Chatterbox → ElevenLabs IVC → pitch-conformed DSP.
+  // Every level reports its REAL gate state (package / weights / RAM / key);
+  // the active engine is the first available one in priority order.
+  try {
+    const chain = await detectCloneChain()
+    for (const entry of chain.chain) {
+      const pid =
+        entry.cls === 'cloud' ? 'builtin:elevenlabs-clone' : `clone:${entry.id}`
+      const h = health.get(pid)
+      out.push({
+        providerId: pid,
+        name: entry.name,
+        category: 'voice-cloning',
+        kind: entry.cls === 'cloud' ? 'builtin' : entry.cls === 'dsp' ? 'local-dsp' : 'local-runtime',
+        class: entry.cls === 'cloud' ? 'cloud' : 'local',
+        enabled: true,
+        state: entry.available ? (h?.state ?? 'READY') : 'NOT_CONFIGURED',
+        lastError: entry.available ? h?.lastError : entry.why,
+        lastCheckedAt: h?.lastCheckedAt ? new Date(h.lastCheckedAt).toISOString() : undefined,
+        consecutiveFailures: h?.consecutiveFailures ?? 0,
+        lastMs: h?.lastMs,
+        model: entry.weightsPath ?? null,
+      })
+    }
+    // Chain resolution summary — the honest "who would serve a clone NOW" row.
+    const active = chain.chain.find((e) => e.id === chain.active)
+    if (active) {
+      out.push({
+        providerId: 'clone:active-engine',
+        name: `Active clone engine: ${active.name}`,
+        category: 'voice-cloning',
+        kind: 'chain-summary',
+        class: active.cls === 'cloud' ? 'cloud' : 'local',
+        enabled: true,
+        state: 'READY',
+        lastError: undefined,
+        consecutiveFailures: 0,
+        model: active.weightsPath ?? null,
+      })
+    }
+  } catch {
+    // Chain detection must never break the snapshot — fall back to the honest
+    // ElevenLabs-only view (pre-v3.5.0 behavior).
+    const cloneKey = envValue('ELEVENLABS_API_KEY')
+    const cloneHealth = health.get('builtin:elevenlabs-clone')
+    out.push({
+      providerId: 'builtin:elevenlabs-clone',
+      name: 'ElevenLabs Instant Voice Cloning (built-in)',
+      category: 'voice-cloning',
+      kind: 'builtin',
+      class: 'cloud',
+      enabled: true,
+      state: cloneKey ? (cloneHealth?.state ?? 'READY') : 'NOT_CONFIGURED',
+      lastError: cloneKey ? cloneHealth?.lastError : 'ELEVENLABS_API_KEY not configured — voice cloning is unavailable (honest state)',
+      lastCheckedAt: cloneHealth?.lastCheckedAt ? new Date(cloneHealth.lastCheckedAt).toISOString() : undefined,
+      consecutiveFailures: cloneHealth?.consecutiveFailures ?? 0,
+    })
+  }
   return out
 }
 
@@ -461,6 +524,10 @@ export interface RoutedCall<T> {
   user: (p: ProviderRow) => Promise<T>
   /** LOCAL executor — omitted when the category has no local path. */
   local?: () => Promise<T>
+  /** KEYLESS last-resort executor (translate only — the free gtx tier).
+   *  Runs AFTER the built-in engine under every policy except manual and
+   *  privacy_first; every attempt is recorded as `free:gtx-translate`. */
+  keyless?: () => Promise<T>
 }
 
 export interface RoutedResult<T> {
@@ -500,13 +567,34 @@ export async function routedCall<T>(category: ProviderCategory, call: RoutedCall
   interface Step {
     id: string
     row?: ProviderRow
-    kind: 'user' | 'local' | 'builtin'
+    kind: 'user' | 'local' | 'builtin' | 'keyless'
     run: () => Promise<T>
   }
 
   const userRows = orderRows(policy, await userChain(category, false))
   const localProviders = call.local ? localRows(category, rt) : []
   const builtinId = `builtin:zai-${category === 'translate' || category === 'llm' ? 'llm' : category}`
+
+  // ── Keyless gtx tier (translate only) — a real builtin-class row so the
+  // health map, chain preview and provider.failed events all report it.
+  const keylessRow: ProviderRow = {
+    id: 'free:gtx-translate',
+    category: 'translate',
+    kind: 'keyless-endpoint',
+    class: 'cloud',
+    name: 'Keyless gtx translate (free tier)',
+    baseUrl: 'https://translate.googleapis.com',
+    model: null,
+    voiceId: null,
+    apiKey: null,
+    headers: {},
+    priority: 95,
+    enabled: true,
+  }
+  const keylessStep: Step | null =
+    category === 'translate' && call.keyless
+      ? { id: keylessRow.id, row: keylessRow, kind: 'keyless', run: () => call.keyless!() }
+      : null
 
   const steps: Step[] = []
   const pushUser = (rows: ProviderRow[]) => {
@@ -516,6 +604,11 @@ export async function routedCall<T>(category: ProviderCategory, call: RoutedCall
     for (const p of localProviders) steps.push({ id: p.id, row: p, kind: 'local', run: () => call.local!() })
   }
   const pushBuiltin = () => steps.push({ id: builtinId, kind: 'builtin', run: () => call.builtin() })
+  /** Keyless tier trails the builtin (never replaces it); excluded from
+   *  privacy_first (cloud) and manual (exactly one row only). */
+  const pushKeyless = () => {
+    if (keylessStep && policy !== 'manual' && policy !== 'privacy_first') steps.push(keylessStep)
+  }
 
   switch (policy) {
     case 'local_first':
@@ -523,20 +616,23 @@ export async function routedCall<T>(category: ProviderCategory, call: RoutedCall
       pushLocal()
       pushUser(userRows)
       pushBuiltin()
+      pushKeyless()
       break
     case 'privacy_first':
       pushLocal()
-      pushUser(userRows) // NO built-in — cloud is excluded for privacy
+      pushUser(userRows) // NO built-in, NO keyless — cloud is excluded for privacy
       break
     case 'server_first':
       pushUser(userRows)
       pushLocal()
       pushBuiltin()
+      pushKeyless()
       break
     case 'quality_first':
       pushBuiltin()
       pushUser(userRows)
       pushLocal()
+      pushKeyless()
       break
     case 'manual':
       pushUser(userRows) // exactly the first enabled user row, nothing else
@@ -552,6 +648,7 @@ export async function routedCall<T>(category: ProviderCategory, call: RoutedCall
         pushBuiltin()
         pushUser(userRows)
         pushLocal()
+        pushKeyless()
       }
       break
     case 'failover':
@@ -559,6 +656,7 @@ export async function routedCall<T>(category: ProviderCategory, call: RoutedCall
       pushUser(userRows)
       pushBuiltin()
       pushLocal() // final local safety net (e.g. espeak TTS when cloud fails)
+      pushKeyless()
       break
   }
 

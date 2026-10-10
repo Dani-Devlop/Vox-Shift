@@ -1,5 +1,5 @@
 import type { StyleMode } from '../types'
-import { getZAI } from './asr'
+import { getZAI, withTransientRetry } from './asr'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Translation Engine — Natural language translation layer
@@ -232,14 +232,18 @@ export class LLMTranslationEngine implements TranslationEngine {
     opts: { sourceLang: string; targetLang: string; style: StyleMode; history?: TranslationContextTurn[] }
   ): Promise<string> {
     const zai = await getZAI()
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'assistant', content: buildSystemPrompt(opts.sourceLang, opts.targetLang, opts.style) },
-        { role: 'user', content: buildUserPrompt(text, opts.history) },
-      ],
-      thinking: { type: 'disabled' },
-      temperature: 0.3,
-    })
+    const completion = await withTransientRetry(
+      () =>
+        zai.chat.completions.create({
+          messages: [
+            { role: 'assistant', content: buildSystemPrompt(opts.sourceLang, opts.targetLang, opts.style) },
+            { role: 'user', content: buildUserPrompt(text, opts.history) },
+          ],
+          thinking: { type: 'disabled' },
+          temperature: 0.3,
+        }),
+      'LLM translation'
+    )
     let out = (completion.choices[0]?.message?.content ?? '').trim()
     // Defensive cleanup: strip wrapping quotes / markdown the model sometimes adds.
     out = out.replace(/^["“”«»'`]+|["“”«»'`]+$/g, '').trim()
@@ -258,14 +262,18 @@ export class LLMTranslationEngine implements TranslationEngine {
     opts: { targetLang: string; style: StyleMode; history?: TranslationContextTurn[]; candidates?: string[] }
   ): Promise<AutoTranslateResult> {
     const zai = await getZAI()
-    const completion = await zai.chat.completions.create({
-      messages: [
-        { role: 'assistant', content: buildAutoSystemPrompt(opts.targetLang, opts.style, opts.candidates) },
-        { role: 'user', content: buildUserPrompt(text, opts.history) },
-      ],
-      thinking: { type: 'disabled' },
-      temperature: 0.2,
-    })
+    const completion = await withTransientRetry(
+      () =>
+        zai.chat.completions.create({
+          messages: [
+            { role: 'assistant', content: buildAutoSystemPrompt(opts.targetLang, opts.style, opts.candidates) },
+            { role: 'user', content: buildUserPrompt(text, opts.history) },
+          ],
+          thinking: { type: 'disabled' },
+          temperature: 0.2,
+        }),
+      'LLM auto translation'
+    )
     const parsed = parseAutoReply(completion.choices[0]?.message?.content ?? '', opts.candidates)
     if (!parsed.text) {
       // Model ignored the format — fall back to treating the whole reply as the

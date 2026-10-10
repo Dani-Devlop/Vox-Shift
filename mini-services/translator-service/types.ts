@@ -113,6 +113,15 @@ export interface UtteranceResult {
   speaker?: SpeakerInfo
   /** Actual providers used per stage (diagnostics §31). */
   providers?: UsedProviders
+  /** HOW the local TTS leg served the audio: 'cache' (LRU hit, 0ms),
+   *  'warm' (resident piper worker), 'cli' (one-shot process), 'espeak'
+   *  (fallback). Absent for remote TTS providers — honest telemetry, §27. */
+  ttsVia?: string
+  /** Romanization of the source text when gtx provided one (reading aid) —
+   *  e.g. fa «سلام» → "salam". Absent on LLM tiers (never fabricated). */
+  sourceTranslit?: string
+  /** Romanization of the translated text (e.g. en→fa output pronunciation). */
+  translatedTranslit?: string
   /** Millis spent computing the voiceprint (honest stage timing). */
   speakerMs?: number
   timings: {
@@ -174,6 +183,9 @@ export interface TranslationEvent {
   speakerRole?: 'A' | 'B'
   /** Speaker recognition result — early text keeps the identity attached. */
   speaker?: SpeakerInfo
+  /** Romanization reading aids when the keyless tier provided them. */
+  sourceTranslit?: string
+  translatedTranslit?: string
 }
 
 /**
