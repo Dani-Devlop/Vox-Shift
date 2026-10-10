@@ -870,3 +870,31 @@ Stage Summary:
 - The generated voice now carries the enrolled speaker's tone color on-box: piper (native fa/en) → OpenVoice v2, measured RTF≈0.94 E2E on 2 vCPU, MIT-licensed, honest failures, reference never leaves the machine.
 - Human-perceived similarity: NOT evaluated (no listening panel) — stated everywhere; ECAPA numbers are relative evidence, not a "95% match" claim.
 - Open items: Railway SSH key registration (blocker), GitHub token for push, Ollama reinstall (translation leg), UI enroll button for local-clone (API ready).
+
+---
+Task ID: V33-REST
+Agent: main (Z.ai Code)
+Task: Restore v3.3.1 stack after platform reset #3 + deliver user's two blockers (SSH key re-registration, GitHub push)
+
+Work Log:
+- User confirmed Railway SSH key registered + provided GitHub tokens (classic ghp_… verified 200, fine-grained github_pat_… verified 200).
+- GitHub push DONE: 81b57d0..95ffee5 main→main via temp GIT_ASKPASS (umask 077, token deleted immediately; never persisted).
+- Railway SSH: /home/z/.ssh was WIPED by reset #3 — v2 private key unrecoverable (deep search: no key material anywhere). Generated NEW ed25519 keypair voxshift-zai-agent-v3 at /home/z/.ssh/zack via cryptography lib (sandbox has no ssh-keygen). One-shot test → AuthenticationException (expected — v3 pub key NOT yet registered on Railway). USER ACTION PENDING: register new pub key.
+- Reset #3 also destroyed: paramiko (reinstalled), /home/z/ttsbench venv, /home/z/models/* (vosk fa/en, openvoice converter, piper voices), /home/z/OpenVoice repo, .zscripts/ boot script.
+- FULL ML STACK RESTORED from code-derived paths (grep of expected /home/z paths):
+  * vosk + piper-tts pip-installed into active venv (/home/z/.venv, uv CPython 3.12.14); espeak-ng survived.
+  * vosk-model-small-fa-0.42 + vosk-model-small-en-us-0.15 → /home/z/models/ (alphacephei.com).
+  * piper fa_IR-amir + en_US-amy (onnx+json) → /home/z/models/piper/ (HF rhasspy v1.0.0).
+  * OpenVoice cloned --depth 1 → /home/z/OpenVoice; OpenVoiceV2 converter (checkpoint 131MB + config) → /home/z/models/openvoice/converter/; ses embeddings → base_speakers/ses/ (HF myshell-ai).
+  * torch 2.14.1+cpu + torchaudio 2.11.0+cpu + OpenVoice deps (unidecode pypinyin cn2an num2words eng_to_ipa inflect wavmark jieba langid pydub onnxruntime speechbrain) → /home/z/.venv. NOTE: /home/z/ttsbench venv NOT recreated (ensurepip missing on system py3.13; venv-from-venv made broken 3.13/3.12 hybrid; symlinks forbidden) → deps live in /home/z/.venv; committed selftest/package.json refs updated ttsbench→.venv.
+- SECOND UNTRACKED-LOSS FOUND & FIXED: src/lib/voice/local-clone.ts was NEVER committed in a90d58e (worklog over-claimed; file list had 21 files) → lost to reset #3. Reconstructed to exact call sites (route.ts: Enroll/Drop/Health; voice.ts: localCloneConvert) + doc'd envs (VOXSHIFT_CLONE_URL/_DISABLED/_TIMEOUT_MS). THIS TIME git-added explicitly.
+- .zscripts/voice-clone-service.sh recreated (service boot, /home/z/.venv/bin/python).
+- bench WAVs (selftest fixtures) regenerated with espeak-ng (gitignored artifacts).
+- Verified: clone-service selftest 10/10 PASS (enroll 256-dim SE, convert fa 2.64s RTF 0.71, erasure 404-after-drop); piper→vosk fa roundtrip "سلام حالت چطوره" ✓; /api/voice-profile/clone ENROLL OK (mode=clone, engine=local-openvoice); e2e-clone-probe E2E_PASS (providers.tts=local-openvoice, 210KB WAV, 5.8s total); DELETE erasure of 2 test profiles → ref dir empty, speakers [].
+- bun run lint clean.
+
+Stage Summary:
+- v3.3.1 local voice-cloning loop is LIVE again end-to-end and now FULLY tracked in git (incl. the previously-lost local-clone.ts).
+- OPEN (user): register v3 public key on Railway → ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICfXuPrmySL5hDD+YYPwb7fTw1RnZVdCew/NGXPVHgYU voxshift-zai-agent-v3
+- Open (infra): Ollama still missing (translate leg used builtin:zai-llm in probe) — reinstall qwen2.5:3b-instruct per §V31 when needed.
+- Quirk reminder: sandbox reaps background services between bash calls — restart :3010/:3003 via .zscripts before probing.

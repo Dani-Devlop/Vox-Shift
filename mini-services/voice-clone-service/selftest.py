@@ -4,7 +4,7 @@
 Covers: health/model-init, enroll validation (short ref rejected), enroll OK,
 convert OK (fa + en), unknown speaker 404, invalid id 400, repeated requests,
 concurrent requests, drop (right-to-erasure), sample-rate + format correctness.
-Run: /home/z/ttsbench/bin/python selftest.py   (service must be running)
+Run: /home/z/.venv/bin/python selftest.py   (service must be running)
 """
 import base64
 import concurrent.futures
