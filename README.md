@@ -15,7 +15,7 @@ own voice** — or reverse the direction (English → Persian). The primary pair
 Persian ↔ English; Deutsch, Français, Español, العربية, Türkçe and Italiano are
 supported on the non-Persian side.
 
-Version **v3.6** · MIT licensed · Next.js 16 + TypeScript · cloud engines with
+Version **v3.7** · MIT licensed · Next.js 16 + TypeScript · cloud engines with
 honest local runtimes as failover.
 
 ---
@@ -77,11 +77,32 @@ honest local runtimes as failover.
 - Saved-phrase archive (phrasebook) with search, star, filter, export, replay.
 
 ### Voice identity (local-first cloning chain)
-- Cloned profiles are served by a **local-first priority chain** (v3.5.0):
+- Cloned profiles are served by a **local-first priority chain** (v3.5.0, engines verified by measurement in v3.7.0):
   **Fish Speech → F5-TTS → Chatterbox → ElevenLabs IVC (cloud) → pitch-conformed
-  match (local DSP)**. Each level's gates are probed for real (python package,
-  model weights on disk, free-RAM floor, API key) and the About page shows the
-  ACTIVE engine live.
+  match (local DSP)**. Each level's gates are probed for real (python package or
+  source checkout, model weights on disk, usable-RAM floor, API key) and the
+  About page shows the ACTIVE engine live.
+- **Fish Speech (local, v3.7.0)**: the official fish-speech **v1.5.0** local
+  surface (`tools.inference_engine.TTSInferenceEngine` — dual-AR llama +
+  firefly-gan VQ decoder), zero-shot from a reference WAV + transcript.
+  Measured on 2 CPU cores: peak RSS **2306 MB**, 3.4 s of audio in ~57 s cold.
+- **F5-TTS (local)**: `f5_tts.api.F5TTS` (v1 base). Measured on 2 CPU cores:
+  peak RSS **2875 MB**, 3.4 s of audio in ~150 s cold. One-shot worker calls
+  (load + infer + exit) keep the resident footprint near zero between phrases.
+- **Honest RAM math (v3.7.0)**: the detector reads the **cgroup memory limit**
+  AND `/proc/meminfo`. On shared platforms (Railway et al.) meminfo describes
+  the HOST (hundreds of GB shared by all projects) while the container is
+  cgroup-capped to its own slice — usable = min(meminfo free, cgroup limit),
+  so the gates never promise RAM the platform will OOM-kill. The About page
+  renders the whole picture (usable MB · source · cgroup cap · host numbers).
+  `VOXSHIFT_RAM_BUDGET_MB` overrides the estimate for operators who know
+  better. Floors are measured, not guessed: Fish 2600 MB · F5 2900 MB ·
+  Chatterbox 2600 MB.
+- **One-shot installer** for any host that can afford the engines:
+  `bash scripts/setup-local-clone.sh` (CPU torch 2.8 pair + f5-tts + the
+  fish-speech v1.5.0 checkout + weights + reference-transcript conventions).
+  Run it after raising the platform memory — the SAME chain picks the local
+  engines up automatically, no code change.
 - With `ELEVENLABS_API_KEY` set (and no local engine installed), VoxShift
   performs **real cross-language voice cloning** (ElevenLabs Instant Voice
   Cloning): translations are synthesized from YOUR enrolled voice — timbre,
@@ -340,8 +361,13 @@ APIs and persistence.
 
 ## Known limitations
 
-- Real cloning requires `ELEVENLABS_API_KEY`; without it the app uses the
-  honestly-labeled pitch-conformed match.
+- **Local cloning engines are RAM-hungry by nature**: Fish Speech and F5-TTS
+  need ~2.6–2.9 GB of free memory to LOAD (measured CPU peaks). On a container
+  capped to ~1 GB (Railway default slice) the honest RAM gate refuses them —
+  the About page shows exactly why (usable vs cgroup cap). Raise the service
+  memory (or run on a bigger box) + `scripts/setup-local-clone.sh`, and the
+  chain activates them automatically. Without any local/cloud clone engine the
+  app uses the honestly-labeled pitch-conformed match.
 - Built-in cloud legs require a reachable `z-ai` endpoint — when unavailable
   (e.g. restricted networks) the chain serves via the keyless/local tiers and
   reports it honestly in the events feed and chips.
@@ -355,11 +381,13 @@ APIs and persistence.
 
 ## Version
 
-**v3.6** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
+**v3.7** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
 (v1 single-pair translator → v2 contacts/multi-provider → v3 honest local
 runtimes, chain telemetry, phrasebook at the point of conversation, warm
 worker pool, honest chain tooltips, history filters, benchmark-backed model
-choices, local-first voice-cloning priority chain).
+choices, local-first voice-cloning priority chain, MEASURED local clone
+engines (fish-speech v1.5.0 official surface + F5-TTS) with cgroup-aware
+honest RAM gating).
 
 ## License
 
