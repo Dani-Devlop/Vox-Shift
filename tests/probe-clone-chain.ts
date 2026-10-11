@@ -30,10 +30,16 @@ const check = (name: string, ok: boolean, detail?: string) => {
   if (!ok) failed++
 }
 
-function runScenario(env: Record<string, string>): { active: string; ram: { source: string; usableMb: number; cgroupLimitMb: number | null } | null; chain: Array<[string, boolean, string]> } {
+// Hermetic isolation: the stub scenarios must never see the HOST's real
+// engine installs. The detector's location hooks are all env-driven, so
+// pointing MODELS_DIR + HF_HOME into the temp stub area hides every real
+// weights location (fileProbe, well-known dirs, HF cache) while the stub
+// PYTHONPATH provides the importable package.
+function runScenario(env: Record<string, string>, isolateDir?: string): { active: string; ram: { source: string; usableMb: number; cgroupLimitMb: number | null } | null; chain: Array<[string, boolean, string]> } {
+  const isolate = isolateDir ? { VOXSHIFT_MODELS_DIR: isolateDir, HF_HOME: isolateDir, FISH_SPEECH_REPO: join(isolateDir, 'no-fish-repo') } : {}
   const res = spawnSync('bun', ['-e', CHILD], {
     cwd: join(import.meta.dir, '..'),
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...isolate, ...env },
     encoding: 'utf8',
     timeout: 60_000,
   })
@@ -44,6 +50,11 @@ function runScenario(env: Record<string, string>): { active: string; ram: { sour
 
 const main = async () => {
   const stubs = mkdtempSync(join(tmpdir(), 'clonechain-'))
+  // Fully empty isolation roots for scenarios that must find NO weights at all
+  // (the chatterbox stub PACKAGE dir would otherwise satisfy the
+  // ${MODELS_ROOT}/chatterbox weights candidate — path collision by design).
+  const emptyIsos: string[] = []
+  const mkEmptyIso = () => { const d = mkdtempSync(join(tmpdir(), 'clonechain-empty-')); emptyIsos.push(d); return d }
   const mkStub = (name: string) => {
     const d = join(stubs, name, name.replace('-', '_'))
     mkdirSync(d, { recursive: true })
@@ -52,7 +63,7 @@ const main = async () => {
 
   try {
     // ── 1. baseline: nothing installed + low RAM → terminal pitch-conformed ──
-    const r1 = runScenario({ VOXSHIFT_TEST_RAM_MB: '200' })
+    const r1 = runScenario({ VOXSHIFT_TEST_RAM_MB: '200' }, stubs)
     check(
       'baseline (no engines, low RAM) → pitch-conformed',
       r1.active === 'pitch-conformed' && r1.chain.every(([id, av]) => (id === 'pitch-conformed' ? av : !av)),
@@ -67,7 +78,7 @@ const main = async () => {
       PYTHONPATH: join(stubs, 'fish_speech'),
       VOXSHIFT_FISH_WEIGHTS: w2,
       VOXSHIFT_TEST_RAM_MB: '8000',
-    })
+    }, stubs)
     check('fish-speech (package+weights+RAM) → ACTIVE fish-speech', r2.active === 'fish-speech', `active=${r2.active}`)
     check('f5-tts unavailable when not installed (priority respected)', r2.chain.find(([id]) => id === 'f5-tts')?.[1] === false)
 
@@ -79,7 +90,7 @@ const main = async () => {
       PYTHONPATH: join(stubs, 'f5_tts'),
       VOXSHIFT_F5_WEIGHTS: w3,
       VOXSHIFT_TEST_RAM_MB: '8000',
-    })
+    }, stubs)
     check('f5-tts (package+weights+RAM) → ACTIVE f5-tts', r3.active === 'f5-tts', `active=${r3.active}`)
 
     // ── 4. chatterbox stub (fish + f5 gone) → chatterbox ────────────────────
@@ -90,7 +101,7 @@ const main = async () => {
       PYTHONPATH: join(stubs, 'chatterbox'),
       VOXSHIFT_CHATTERBOX_WEIGHTS: w4,
       VOXSHIFT_TEST_RAM_MB: '8000',
-    })
+    }, stubs)
     check('chatterbox (package+weights+RAM) → ACTIVE chatterbox', r4.active === 'chatterbox', `active=${r4.active}`)
 
     // ── 5. RAM guard: stubs present but host poor → locals refused ──────────
@@ -98,7 +109,7 @@ const main = async () => {
       PYTHONPATH: join(stubs, 'chatterbox'),
       VOXSHIFT_CHATTERBOX_WEIGHTS: w4,
       VOXSHIFT_TEST_RAM_MB: '200',
-    })
+    }, stubs)
     check(
       'RAM guard refuses GB-class locals (200 MB free) → pitch-conformed',
       r5.active === 'pitch-conformed' && (r5.chain.find(([id]) => id === 'chatterbox')?.[2].includes('RAM gate') ?? false),
@@ -109,13 +120,13 @@ const main = async () => {
     // Simulate the shared-host case: the OS meminfo is huge but the cgroup cap
     // is small → usable MUST be capped (never promise RAM the platform OOMs).
     // The override knob (VOXSHIFT_RAM_BUDGET_MB) is the operator's opt-out.
-    const capped = runScenario({ PYTHONPATH: join(stubs, 'chatterbox'), VOXSHIFT_CHATTERBOX_WEIGHTS: w4, VOXSHIFT_TEST_RAM_MB: '200' })
+    const capped = runScenario({ PYTHONPATH: join(stubs, 'chatterbox'), VOXSHIFT_CHATTERBOX_WEIGHTS: w4, VOXSHIFT_TEST_RAM_MB: '200' }, stubs)
     check('test-hook RAM is honored by the gates (source=test)', capped.ram?.source === 'test' && capped.ram.usableMb === 200, `ram=${JSON.stringify(capped.ram)}`)
     const overridden = runScenario({
       PYTHONPATH: join(stubs, 'chatterbox'),
       VOXSHIFT_CHATTERBOX_WEIGHTS: w4,
       VOXSHIFT_RAM_BUDGET_MB: '8000',
-    })
+    }, stubs)
     check(
       'VOXSHIFT_RAM_BUDGET_MB override wins → engine activates',
       overridden.active === 'chatterbox' && overridden.ram?.source === 'override' && overridden.ram.usableMb === 8000,
@@ -123,11 +134,12 @@ const main = async () => {
     )
 
     // ── 6. weights-missing: importable package but no weights → refused ─────
+    const emptyIso = mkEmptyIso()
     const r6 = runScenario({
       PYTHONPATH: join(stubs, 'chatterbox'),
       VOXSHIFT_TEST_RAM_MB: '8000',
       VOXSHIFT_CHATTERBOX_WEIGHTS: '/nonexistent-weights-path',
-    })
+    }, emptyIso)
     check(
       'package without weights → refused (honest gate)',
       r6.active === 'pitch-conformed' && r6.chain.find(([id]) => id === 'chatterbox')?.[2].includes('weights were not found'),
@@ -138,12 +150,13 @@ const main = async () => {
     const withKey = runScenario({
       ELEVENLABS_API_KEY: 'probe-key-not-real',
       VOXSHIFT_TEST_RAM_MB: '200',
-    })
+    }, stubs)
     check('ELEVENLABS_API_KEY present → cloud row available', withKey.chain.find(([id]) => id === 'elevenlabs-ivc')?.[1] === true)
-    const withoutKey = runScenario({ ELEVENLABS_API_KEY: '', VOXSHIFT_TEST_RAM_MB: '200' })
+    const withoutKey = runScenario({ ELEVENLABS_API_KEY: '', VOXSHIFT_TEST_RAM_MB: '200' }, stubs)
     check('key absent → cloud row unavailable, chain still resolves', withoutKey.chain.find(([id]) => id === 'elevenlabs-ivc')?.[1] === false)
   } finally {
     rmSync(stubs, { recursive: true, force: true })
+    for (const d of emptyIsos) rmSync(d, { recursive: true, force: true })
   }
 
   if (failed > 0) {
