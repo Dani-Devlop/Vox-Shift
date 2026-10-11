@@ -12,6 +12,7 @@ import {
   satelliteCloneSynthesize,
 } from './clone-workers'
 import { readFile } from 'fs/promises'
+import { readFileSync as readFileSyncSync } from 'fs'
 
 // Piper base-voice F0 cache (measured once per language at synthesis time so
 // the timbre level can pre-compensate TTS speed for exact duration recovery).
@@ -62,6 +63,16 @@ function clampPitchRatio(ratio: number | undefined): number {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/** Free MemAvailable MB (the same honest signal the whisper guard uses). */
+function freeMemMB(): number {
+  try {
+    const m = readFileSyncSync('/proc/meminfo', 'utf8').match(/MemAvailable:\s+(\d+) kB/)
+    return m ? Math.round(parseInt(m[1], 10) / 1024) : 4096
+  } catch {
+    return 4096
+  }
+}
 
 /** Retry policy for transient upstream errors (429 rate limit, 5xx, network).
  *  Provider 429 windows vary from sub-second bursts to ~10s stretches — the
@@ -387,10 +398,12 @@ export class VoiceIdentityEngine {
     // v3.8.0 gender-aware base voice: a low-F0 (male) reference conformed onto
     // the female amy voice starts from a 0.63 pitch ratio — clamped to 0.75 and
     // still audibly wrong. When a male English voice is installed, start from
-    // it and let the envelope morph finish the match.
+    // it and let the envelope morph finish the match. RAM-gated: the ryan
+    // worker spawns on demand (~250 MB RSS) — skip the override when the host
+    // cannot afford it (the amy + stronger morph correction still serves).
     const maleEn = 'en_US-ryan-high.onnx'
     const voiceFile =
-      lang === 'en' && ref.f0Mean && ref.f0Mean < 145 ? maleEn : undefined
+      lang === 'en' && ref.f0Mean && ref.f0Mean < 145 && freeMemMB() >= 400 ? maleEn : undefined
     const cachedBaseF0 = BASE_F0_CACHE.get(`${lang}|${voiceFile}`)
     const ratioGuess =
       cachedBaseF0 && ref.f0Mean
