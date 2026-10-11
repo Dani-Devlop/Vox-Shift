@@ -3,7 +3,7 @@ import { resampleWav } from './audio-utils'
 import { openAICompatibleTTS, routedCall } from '../providers/router'
 import { ElevenLabsCloneEngine, cloneProviderConfigured } from './voice-clone'
 import { detectCloneChain, type CloneEngineId } from '../../../src/lib/voice/clone-chain'
-import { cloneRefWavPath, isLocalCloneEngine, localCloneSynthesize } from './clone-workers'
+import { cloneRefTextFor, cloneRefWavPath, isLocalCloneEngine, localCloneSynthesize } from './clone-workers'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Voice Engine — Voice identity / synthesis layer (fully separate from translation)
@@ -240,9 +240,10 @@ export class VoiceIdentityEngine {
         attempts.push({ engine, ok: false, error: 'no reference WAV on disk for this profile — re-enroll to use local engines' })
         continue
       }
+      const refText = cloneRefTextFor(refPath)
       const t0 = Date.now()
       try {
-        const out = await localCloneSynthesize(engine, text, refPath)
+        const out = await localCloneSynthesize(engine, text, refPath, { refText })
         attempts.push({ engine, ok: true, ms: Date.now() - t0 })
         return { buffer: out.buffer, format: 'wav', providerId: engine, degraded: false, cloneAttempts: attempts }
       } catch (err) {

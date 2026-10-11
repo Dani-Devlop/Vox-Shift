@@ -21,7 +21,7 @@ const CHILD = `
 import { detectCloneChain, invalidateCloneChainCache } from '/home/z/Vox-Shift/src/lib/voice/clone-chain'
 invalidateCloneChainCache()
 const r = await detectCloneChain()
-console.log('RESULT:' + JSON.stringify({ active: r.active, chain: r.chain.map((e) => [e.id, e.available, e.why.slice(0, 80)]) }))
+console.log('RESULT:' + JSON.stringify({ active: r.active, ram: r.ram ? { source: r.ram.source, usableMb: r.ram.usableMb, cgroupLimitMb: r.ram.cgroupLimitMb } : null, chain: r.chain.map((e) => [e.id, e.available, e.why.slice(0, 90)]) }))
 `
 
 let failed = 0
@@ -30,7 +30,7 @@ const check = (name: string, ok: boolean, detail?: string) => {
   if (!ok) failed++
 }
 
-function runScenario(env: Record<string, string>): { active: string; chain: Array<[string, boolean, string]> } {
+function runScenario(env: Record<string, string>): { active: string; ram: { source: string; usableMb: number; cgroupLimitMb: number | null } | null; chain: Array<[string, boolean, string]> } {
   const res = spawnSync('bun', ['-e', CHILD], {
     cwd: join(import.meta.dir, '..'),
     env: { ...process.env, ...env },
@@ -101,8 +101,25 @@ const main = async () => {
     })
     check(
       'RAM guard refuses GB-class locals (200 MB free) → pitch-conformed',
-      r5.active === 'pitch-conformed' && r5.chain.find(([id]) => id === 'chatterbox')?.[2].includes('MB free'),
+      r5.active === 'pitch-conformed' && (r5.chain.find(([id]) => id === 'chatterbox')?.[2].includes('RAM gate') ?? false),
       `active=${r5.active} · why=${r5.chain.find(([id]) => id === 'chatterbox')?.[2]}`
+    )
+
+    // ── 5b. cgroup-capped host honesty + operator override ─────────────────
+    // Simulate the shared-host case: the OS meminfo is huge but the cgroup cap
+    // is small → usable MUST be capped (never promise RAM the platform OOMs).
+    // The override knob (VOXSHIFT_RAM_BUDGET_MB) is the operator's opt-out.
+    const capped = runScenario({ PYTHONPATH: join(stubs, 'chatterbox'), VOXSHIFT_CHATTERBOX_WEIGHTS: w4, VOXSHIFT_TEST_RAM_MB: '200' })
+    check('test-hook RAM is honored by the gates (source=test)', capped.ram?.source === 'test' && capped.ram.usableMb === 200, `ram=${JSON.stringify(capped.ram)}`)
+    const overridden = runScenario({
+      PYTHONPATH: join(stubs, 'chatterbox'),
+      VOXSHIFT_CHATTERBOX_WEIGHTS: w4,
+      VOXSHIFT_RAM_BUDGET_MB: '8000',
+    })
+    check(
+      'VOXSHIFT_RAM_BUDGET_MB override wins → engine activates',
+      overridden.active === 'chatterbox' && overridden.ram?.source === 'override' && overridden.ram.usableMb === 8000,
+      `active=${overridden.active} · ram=${JSON.stringify(overridden.ram)}`
     )
 
     // ── 6. weights-missing: importable package but no weights → refused ─────

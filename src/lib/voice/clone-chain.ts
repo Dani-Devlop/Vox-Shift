@@ -45,25 +45,149 @@ export interface CloneChainResult {
   chain: CloneChainEntry[]
   /** First available engine in priority order (always resolves). */
   active: CloneEngineId
+  /** Honest usable-RAM numbers behind the gates (About page renders this). */
+  ram: RamProbe
   detectedAt: string
 }
 
 // ── RAM probe (honest host capability) ───────────────────────────────────────
 
-/**
- * Free RAM in MB. Test hook: VOXSHIFT_TEST_RAM_MB forces a value so the RAM
- * gate can be exercised deterministically (documented, sandbox-only).
- */
-export function availableRamMb(): number {
-  const forced = process.env.VOXSHIFT_TEST_RAM_MB
-  if (forced && Number.isFinite(Number(forced))) return Number(forced)
+export interface RamProbe {
+  /** Usable MB for a new allocation — the value the RAM gates compare. */
+  usableMb: number
+  /** Where the number came from (rendered on the About page). */
+  source: 'override' | 'test' | 'meminfo-cgroup-synced' | 'meminfo-capped-by-cgroup' | 'meminfo'
+  /** cgroup memory limit (v2 memory.max / v1 memory.limit_in_bytes), MB. */
+  cgroupLimitMb: number | null
+  /** Host meminfo numbers, MB (as the OS reports them). */
+  meminfoTotalMb: number | null
+  meminfoAvailableMb: number | null
+  /** Human explanation, e.g. why a 100 GB host still yields a small usable. */
+  note: string
+}
+
+function readMeminfo(): { totalMb: number | null; availableMb: number | null } {
   try {
     const info = readFileSync('/proc/meminfo', 'utf8')
-    const m = info.match(/MemAvailable:\s+(\d+) kB/)
-    return m ? Math.round(parseInt(m[1], 10) / 1024) : Number.MAX_SAFE_INTEGER
+    const total = info.match(/MemTotal:\s+(\d+) kB/)
+    const avail = info.match(/MemAvailable:\s+(\d+) kB/)
+    return {
+      totalMb: total ? Math.round(parseInt(total[1], 10) / 1024) : null,
+      availableMb: avail ? Math.round(parseInt(avail[1], 10) / 1024) : null,
+    }
   } catch {
-    return Number.MAX_SAFE_INTEGER
+    return { totalMb: null, availableMb: null }
   }
+}
+
+function readCgroupLimitMb(): number | null {
+  try {
+    // cgroup v2
+    const v2 = readFileSync('/sys/fs/cgroup/memory.max', 'utf8').trim()
+    if (v2 && v2 !== 'max') return Math.round(parseInt(v2, 10) / (1024 * 1024))
+  } catch {}
+  try {
+    // cgroup v1
+    const v1 = readFileSync('/sys/fs/cgroup/memory/memory.limit_in_bytes', 'utf8').trim()
+    const n = parseInt(v1, 10)
+    // values > 2^40 (e.g. 0x7FFFFFFFFFFFF000) mean "no limit"
+    if (Number.isFinite(n) && n > 0 && n < 2 ** 40) return Math.round(n / (1024 * 1024))
+  } catch {}
+  return null
+}
+
+/**
+ * Honest usable-RAM probe.
+ *
+ * Priority:
+ *   1. VOXSHIFT_RAM_BUDGET_MB  — operator-declared budget (wins outright; use
+ *      when the platform limit was raised and the old cgroup reading is stale,
+ *      or to opt in on soft limits). Rendered as an override in the UI.
+ *   2. VOXSHIFT_TEST_RAM_MB    — deterministic test hook.
+ *   3. Real probe:
+ *        · /proc/meminfo MemAvailable (kernel's own reclaim-aware estimate)
+ *        · the cgroup memory limit — the piece a shared host hides: on many
+ *          platforms (Railway included) /proc/meminfo describes the HOST
+ *          (hundreds of GB shared by all projects) while the cgroup caps THIS
+ *          container at its own slice. When meminfo.MemTotal ≫ cgroup limit
+ *          we cap usable = min(MemAvailable, cgroupLimit) so the gates never
+ *          promise RAM the platform will refuse to give (OOM-kill otherwise).
+ *        · When meminfo.MemTotal ≈ cgroup limit the meminfo view is already
+ *          cgroup-scoped (lxcfs-style) and MemAvailable alone is correct.
+ */
+export function ramProbe(): RamProbe {
+  const override = process.env.VOXSHIFT_RAM_BUDGET_MB
+  if (override && Number.isFinite(Number(override))) {
+    return {
+      usableMb: Math.max(0, Math.round(Number(override))),
+      source: 'override',
+      cgroupLimitMb: readCgroupLimitMb(),
+      meminfoTotalMb: null,
+      meminfoAvailableMb: null,
+      note: `operator override VOXSHIFT_RAM_BUDGET_MB=${override}`,
+    }
+  }
+  const test = process.env.VOXSHIFT_TEST_RAM_MB
+  if (test && Number.isFinite(Number(test))) {
+    return {
+      usableMb: Number(test),
+      source: 'test',
+      cgroupLimitMb: null,
+      meminfoTotalMb: null,
+      meminfoAvailableMb: null,
+      note: 'test hook VOXSHIFT_TEST_RAM_MB',
+    }
+  }
+  const mem = readMeminfo()
+  const limitMb = readCgroupLimitMb()
+  if (mem.availableMb === null) {
+    return {
+      usableMb: Number.MAX_SAFE_INTEGER,
+      source: 'meminfo',
+      cgroupLimitMb: limitMb,
+      meminfoTotalMb: mem.totalMb,
+      meminfoAvailableMb: null,
+      note: 'meminfo unreadable — RAM gate open',
+    }
+  }
+  const synced = limitMb !== null && mem.totalMb !== null && Math.abs(mem.totalMb - limitMb) <= Math.max(64, limitMb * 0.05)
+  if (synced) {
+    return {
+      usableMb: mem.availableMb,
+      source: 'meminfo-cgroup-synced',
+      cgroupLimitMb: limitMb,
+      meminfoTotalMb: mem.totalMb,
+      meminfoAvailableMb: mem.availableMb,
+      note: `container-scoped memory: ${mem.availableMb} MB available of the ${limitMb} MB cgroup slice`,
+    }
+  }
+  if (limitMb !== null) {
+    const usable = Math.min(mem.availableMb, limitMb)
+    return {
+      usableMb: usable,
+      source: 'meminfo-capped-by-cgroup',
+      cgroupLimitMb: limitMb,
+      meminfoTotalMb: mem.totalMb,
+      meminfoAvailableMb: mem.availableMb,
+      note:
+        `host reports ${mem.availableMb} MB free, but this container is cgroup-capped to ` +
+        `${limitMb} MB — the platform slice is what binds. Raise the service memory ` +
+        '(or set VOXSHIFT_RAM_BUDGET_MB) to unlock the GB-class local engines.',
+    }
+  }
+  return {
+    usableMb: mem.availableMb,
+    source: 'meminfo',
+    cgroupLimitMb: null,
+    meminfoTotalMb: mem.totalMb,
+    meminfoAvailableMb: mem.availableMb,
+    note: `${mem.availableMb} MB available (no cgroup limit detected)`,
+  }
+}
+
+/** Free RAM in MB (compat wrapper used by the gates and health rows). */
+export function availableRamMb(): number {
+  return ramProbe().usableMb
 }
 
 // ── Engine registry (extensible — new engines register here, in order) ──────
@@ -74,6 +198,13 @@ export interface CloneEngineSpec {
   cls: 'local' | 'cloud' | 'dsp'
   /** Python modules whose import proves the package is installed (ANY of). */
   pythonModules: string[]
+  /**
+   * Optional file-existence probe that ALSO proves installability — used by
+   * engines that ship as a source checkout rather than a pip package
+   * (fish-speech v1.5.0: the official local surface lives in the repo's
+   * tools/inference_engine, not behind `import fish_speech`).
+   */
+  fileProbe?: () => string | null
   /** Candidate weights locations — first existing dir/file wins. */
   weightsCandidates: () => string[]
   minRamMb: number
@@ -102,6 +233,19 @@ export const CLONE_ENGINE_SPECS: CloneEngineSpec[] = [
     name: 'Fish Speech (local)',
     cls: 'local',
     pythonModules: ['fish_speech'],
+    // v1.5.0 ships as a source checkout — the official local synthesis surface
+    // (tools.inference_engine.TTSInferenceEngine) exists only in the repo.
+    fileProbe: () => {
+      const repos = [
+        process.env.FISH_SPEECH_REPO,
+        `${MODELS_ROOT}/fish-speech-src`,
+        '/opt/voxshift/models/fish-speech-src',
+      ].filter((p): p is string => Boolean(p))
+      for (const repo of repos) {
+        if (existsSync(`${repo}/tools/inference_engine/__init__.py`)) return repo
+      }
+      return null
+    },
     weightsCandidates: () => [
       process.env.VOXSHIFT_FISH_WEIGHTS,
       `${MODELS_ROOT}/fish-speech`,
@@ -122,7 +266,7 @@ export const CLONE_ENGINE_SPECS: CloneEngineSpec[] = [
       `${MODELS_ROOT}/f5-tts`,
       `${HF_HUB_CACHE}/SWivid--F5-TTS`,
     ].filter((p): p is string => Boolean(p)),
-    minRamMb: 4200, // F5-TTS Base: ~4-8 GB VRAM
+    minRamMb: 2900, // measured CPU peak RSS 2875 MB across two real runs (2-core sandbox); +1% margin — the old 4200 was the GPU-docs number
     installHint: 'pip install f5-tts + model weights to /home/z/models/f5-tts (or set VOXSHIFT_F5_WEIGHTS)',
   },
   {
@@ -208,7 +352,8 @@ export function invalidateCloneChainCache(): void {
 
 async function detectChain(): Promise<CloneChainResult> {
   const chain: CloneChainEntry[] = []
-  const ramMb = availableRamMb()
+  const ram = ramProbe()
+  const ramMb = ram.usableMb
 
   for (const spec of CLONE_ENGINE_SPECS) {
     const weights = spec.weightsCandidates().find((p) => dirHasWeights(p))
@@ -218,14 +363,15 @@ async function detectChain(): Promise<CloneChainResult> {
         name: spec.name,
         cls: spec.cls,
         available: false,
-        why: `installed but the host has only ${ramMb} MB free — engine needs ≥ ${spec.minRamMb} MB`,
+        why: `RAM gate: usable ${ramMb} MB (${ram.source}) < required ${spec.minRamMb} MB${ram.cgroupLimitMb ? ` — container cgroup cap ${ram.cgroupLimitMb} MB` : ''}`,
         minRamMb: spec.minRamMb,
         weightsPath: weights ?? null,
       })
       continue
     }
     const found = await pythonHasAny(spec.pythonModules)
-    if (!found) {
+    const fileHit = spec.fileProbe?.() ?? null
+    if (!found && !fileHit) {
       chain.push({
         id: spec.id,
         name: spec.name,
@@ -243,7 +389,7 @@ async function detectChain(): Promise<CloneChainResult> {
         name: spec.name,
         cls: spec.cls,
         available: false,
-        why: `python package "${found}" is importable but model weights were not found on disk`,
+        why: `${fileHit ? `source checkout ${fileHit}` : `python package "${found}"`} is present but model weights were not found on disk`,
         minRamMb: spec.minRamMb,
         weightsPath: null,
       })
@@ -254,7 +400,7 @@ async function detectChain(): Promise<CloneChainResult> {
       name: spec.name,
       cls: spec.cls,
       available: true,
-      why: `ready (${found}, weights present, ${ramMb} MB free)`,
+      why: `ready (${fileHit ? `source ${fileHit}` : found}, weights present, ${ramMb} MB usable by ${ram.source})`,
       minRamMb: spec.minRamMb,
       weightsPath: weights,
     })
@@ -285,7 +431,7 @@ async function detectChain(): Promise<CloneChainResult> {
   })
 
   const active = chain.find((e) => e.available)?.id ?? 'pitch-conformed'
-  return { chain, active, detectedAt: new Date().toISOString() }
+  return { chain, active, ram, detectedAt: new Date().toISOString() }
 }
 
 /** Cached chain detection (30 s TTL). */

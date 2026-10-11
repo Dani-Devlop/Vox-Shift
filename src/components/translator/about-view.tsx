@@ -24,10 +24,27 @@ interface CloneChainEntryData {
   weightsPath?: string | null
 }
 
+interface CloneChainRamData {
+  usableMb: number
+  source: string
+  cgroupLimitMb: number | null
+  meminfoTotalMb: number | null
+  meminfoAvailableMb: number | null
+  note: string
+}
+
+const RAM_SOURCE_LABEL: Record<string, string> = {
+  override: 'operator override',
+  test: 'test hook',
+  'meminfo-cgroup-synced': 'container-scoped memory',
+  'meminfo-capped-by-cgroup': 'cgroup-capped slice of a bigger host',
+  meminfo: 'host memory',
+}
+
 interface DiagnosticsData {
   version: string
   providers: Record<string, { engine: string; configured: boolean; mode?: string }>
-  voiceCloneChain?: { active: string; detectedAt: string; chain: CloneChainEntryData[] } | null
+  voiceCloneChain?: { active: string; detectedAt: string; chain: CloneChainEntryData[]; ram?: CloneChainRamData | null } | null
   builtins?: { zaiSdk?: boolean }
   database: { ok: boolean; engine: string }
   realtime: { transport: string; gateway: string }
@@ -160,7 +177,7 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
           Persian ↔ English (plus Deutsch, Français, Español, العربية, Türkçe, Italiano) · Auto-detect
           two-way direction with ASR-level language detection · code-switching (Persian sentences with
           embedded English words) · Natural / Clean / Literal / Formal / Casual
-          styles · local-first engine chains for ASR / translation / TTS / cloning (v3.6.0) ·
+          styles · local-first engine chains for ASR / translation / TTS / cloning (v3.7.0) ·
           persistent resumable conversations · live captions · latency telemetry.
         </p>
       </section>
@@ -240,12 +257,29 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
                     {entry.why}
                   </p>
                   {entry.cls === 'local' && entry.minRamMb > 0 && (
-                    <p className="mt-0.5 font-mono text-[10px] text-zinc-600">RAM floor ≥ {entry.minRamMb} MB free</p>
+                    <p className="mt-0.5 font-mono text-[10px] text-zinc-600">RAM floor ≥ {entry.minRamMb} MB usable</p>
                   )}
                 </li>
               )
             })}
           </ol>
+        )}
+        {chain?.ram && (
+          <div className="mt-3 rounded-xl border border-zinc-800 bg-zinc-950/60 px-3 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-[11px] font-semibold text-zinc-200">Usable RAM for new model loads</span>
+              <span className="font-mono text-[10px] font-bold text-emerald-400">
+                {chain.ram.usableMb >= Number.MAX_SAFE_INTEGER / 2 ? 'unlimited' : `${chain.ram.usableMb} MB`}
+              </span>
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 font-mono text-[10px] text-zinc-500">
+              <span>source: {RAM_SOURCE_LABEL[chain.ram.source] ?? chain.ram.source}</span>
+              {chain.ram.cgroupLimitMb !== null && <span>cgroup cap: {chain.ram.cgroupLimitMb} MB</span>}
+              {chain.ram.meminfoTotalMb !== null && <span>host meminfo total: {chain.ram.meminfoTotalMb} MB</span>}
+              {chain.ram.meminfoAvailableMb !== null && <span>host meminfo free: {chain.ram.meminfoAvailableMb} MB</span>}
+            </div>
+            <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">{chain.ram.note}</p>
+          </div>
         )}
       </section>
 

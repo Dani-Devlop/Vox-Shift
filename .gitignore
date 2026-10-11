@@ -1,2 +1,7 @@
 skills/
 node_modules/
+.next/
+.env
+tsconfig.tsbuildinfo
+db/custom.db
+*.tsbuildinfo

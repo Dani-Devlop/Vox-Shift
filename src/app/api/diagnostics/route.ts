@@ -26,7 +26,7 @@ export const maxDuration = 60
 // demo successes, no secrets ever returned.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const APP_VERSION = '3.6.0'
+const APP_VERSION = '3.7.0'
 /**
  * Transport probe target — the translator mini-service directly. The probe
  * performs a REAL engine.io v4 polling handshake (the same first request a
@@ -131,7 +131,7 @@ export async function GET() {
     voiceCloneChain: await (async () => {
       try {
         const c = await detectCloneChain()
-        return { active: c.active, detectedAt: c.detectedAt, chain: c.chain }
+        return { active: c.active, detectedAt: c.detectedAt, chain: c.chain, ram: c.ram }
       } catch {
         return null
       }

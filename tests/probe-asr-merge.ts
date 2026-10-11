@@ -22,7 +22,7 @@ const check = (name: string, ok: boolean, detail?: string) => {
   if (!ok) failed++
 }
 
-const fa = (w: string, s: number, e: number): AsrWord => ({ w, start: s, end: e })
+const fa = (w: string, s: number, e: number): AsrWord => ({ w, start: s, end: e });
 
 // ── Part 1: mergeWords unit scenarios ────────────────────────────────────────
 {

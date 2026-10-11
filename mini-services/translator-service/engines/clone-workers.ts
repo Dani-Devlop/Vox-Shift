@@ -9,7 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { spawn } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import type { CloneEngineId } from '../../../src/lib/voice/clone-chain'
@@ -42,25 +42,51 @@ export function cloneRefWavPath(providerProfileId: string | undefined): string |
   return null
 }
 
+/**
+ * Reference transcript for zero-shot engines (fish + f5 both condition on the
+ * reference text; f5's empty-text path pulls a whisper model mid-flight).
+ * Convention: a .txt sibling of the WAV ({id}.txt), or the operator-wide
+ * VOXSHIFT_CLONE_REF_TEXT. Returns null when none exists — the engines then
+ * run on their honest best-effort path.
+ */
+export function cloneRefTextFor(refWavPath: string | null): string | null {
+  const env = process.env.VOXSHIFT_CLONE_REF_TEXT
+  if (env) return env
+  if (!refWavPath) return null
+  const txt = refWavPath.replace(/\.wav$/i, '.txt')
+  try {
+    if (existsSync(txt)) return readFileSync(txt, 'utf8').trim() || null
+  } catch {}
+  return null
+}
+
 export interface LocalCloneSynthResult {
   buffer: Buffer
   sampleRate: number
   ms: number
 }
 
-/** Run the python worker for one LOCAL clone engine. Rejects with the honest worker error. */
+/** Run the python worker for one LOCAL clone engine. Rejects with the honest worker error.
+ *
+ * timeoutMs defaults to 300 s: the measured one-shot cold path is ~57 s for
+ * fish-speech (LLM load + 3.4 s audio) and ~150 s for f5-tts — the old 120 s
+ * default killed cold f5 calls mid-vocoder. */
 export function localCloneSynthesize(
   engine: Extract<CloneEngineId, 'fish-speech' | 'f5-tts' | 'chatterbox'>,
   text: string,
   refWavPath: string,
-  timeoutMs = 120_000
+  opts?: { timeoutMs?: number; refText?: string | null }
 ): Promise<LocalCloneSynthResult> {
+  const timeoutMs = opts?.timeoutMs ?? 300_000
+  const refText = opts?.refText ?? null
   return new Promise((resolve, reject) => {
     const worker = join(SERVICE_DIR, 'clone-tts-worker.py')
+    const args = [worker, engine, text.slice(0, 2000), refWavPath]
+    if (refText) args.push(refText.slice(0, 2000))
     let out = ''
     let settled = false
     try {
-      const proc = spawn('python3', [worker, engine, text.slice(0, 2000), refWavPath], {
+      const proc = spawn('python3', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       const timer = setTimeout(() => {
