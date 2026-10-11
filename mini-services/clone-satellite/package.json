@@ -1,0 +1,10 @@
+{
+  "name": "voxshift-clone-satellite",
+  "version": "3.8.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot server.ts",
+    "start": "bun server.ts"
+  }
+}

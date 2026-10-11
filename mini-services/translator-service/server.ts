@@ -527,6 +527,7 @@ async function handlePreviewVoice(req: IncomingMessage, res: ServerResponse): Pr
       pitchRatio: body.pitchRatio === undefined ? undefined : num(body.pitchRatio, 0.75, 1.33, 1),
       profileMode: body.profileMode === 'clone' || body.profileMode === 'voice-match' ? body.profileMode : undefined,
       providerProfileId: typeof body.providerProfileId === 'string' ? body.providerProfileId.slice(0, 80) : undefined,
+      profileId: typeof body.profileId === 'string' ? body.profileId.slice(0, 80) : undefined,
       providerModel: typeof body.providerModel === 'string' ? body.providerModel.slice(0, 40) : undefined,
       stability: num(body.stability, 0, 1, 0.5),
       providerSimilarity: num(body.providerSimilarity, 0, 1, 0.8),

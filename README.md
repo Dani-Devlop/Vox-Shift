@@ -261,9 +261,56 @@ in About · Diagnostics → *Run self-test*.
 | --- | --- | --- |
 | `DATABASE_URL` | yes | SQLite file for profiles, threads, history (e.g. `file:./db/voxshift.db`) |
 | `APP_SECRET` | optional | Extra entropy for encrypting user-provided provider API keys (a machine secret is auto-generated in `db/.provider-secret` regardless) |
-| `ELEVENLABS_API_KEY` | optional | Enables REAL cross-language voice cloning (ElevenLabs IVC). Without it the app runs in honest pitch-conformed voice-match mode |
+| `ELEVENLABS_API_KEY` | optional | Enables REAL cross-language voice cloning (ElevenLabs IVC). Without it the app runs the local chain: real engines → satellite → timbre-conformed DSP |
 | `TRANSLATOR_SERVICE_URL` | optional | Realtime service probe target for the self-test (default `http://127.0.0.1:3003`) |
-| `VOXSHIFT_MODELS_DIR` | optional | Root of local runtime models (vosk / piper model dirs) when not on the default path |
+| `VOXSHIFT_MODELS_DIR` | optional | Root of local runtime models (vosk / piper / clone-engine weights) when not on the default path |
+| `VOXSHIFT_RAM_BUDGET_MB` | optional | Operator-declared usable RAM for the clone-engine gates (wins over the cgroup probe) |
+| `VOXSHIFT_SATELLITE_CLONE_URL` | optional | URL of your **clone satellite** (`mini-services/clone-satellite`, port 3011) — serves REAL Fish Speech / F5-TTS / Chatterbox from any RAM-rich machine you control |
+| `VOXSHIFT_WHISPER_MODEL` | optional | Resident faster-whisper model: `tiny` (bundled, default) or `base` (better embedded-English + accents, ~2× RTF, int8) |
+| `VOXSHIFT_FISH_WEIGHTS` / `VOXSHIFT_F5_WEIGHTS` / `VOXSHIFT_CHATTERBOX_WEIGHTS` | optional | Explicit weight directories for the local clone engines |
+| `VOXSHIFT_CLONE_REF_TEXT` | optional | Transcript of the enrollment reference (zero-shot engines condition on it; a `.txt` sibling of the WAV wins) |
+
+## Voice cloning setup (v3.8.0)
+
+Clone-mode and voice-match profiles are served by the first AVAILABLE level of
+the priority chain (About · Diagnostics renders it live):
+
+1. **Fish Speech (local)** — zero-shot, ~2.3 GB RAM peak, needs `pip install`
+   of the inference deps + weights (`scripts/setup-local-clone.sh --with-fish`)
+2. **F5-TTS (local)** — zero-shot, ~2.9 GB RAM peak (`--with-f5`)
+3. **Chatterbox (local)** — zero-shot (`pip install chatterbox-tts`, pins its
+   own torch version — install it in a separate venv)
+4. **Satellite clone (your host)** — `VOXSHIFT_SATELLITE_CLONE_URL` →
+   `mini-services/clone-satellite` running the REAL engines on any machine
+   with RAM to spare (this is how a ~1 GB Railway container gets full-quality
+   cloning from a 500 GB-class host without changing the platform plan)
+5. **ElevenLabs IVC (cloud)** — `ELEVENLABS_API_KEY`
+6. **Timbre-conformed (local DSP, v3.8.0)** — runs ANYWHERE with no RAM
+   floor: piper base voice shifted to your measured F0 + spectral-envelope
+   morph (STASS) toward your enrolled reference — the default voice-match
+   path now reproduces your tone (re-enroll once after upgrading so the
+   reference WAV is persisted)
+7. **Pitch-conformed (local DSP)** — preset + pitch ratio, always available,
+   labeled NOT-a-clone
+
+```bash
+# one-shot installer for the local engines (any host with the RAM):
+bash scripts/setup-local-clone.sh            # fish-speech + f5-tts + weights
+# then restart the translator — the chain picks the engines up (30 s cache)
+
+# satellite on your own machine (real engines for a small container):
+bash scripts/setup-local-clone.sh
+cd mini-services/clone-satellite && bun server.ts     # :3011
+# on the app host:  VOXSHIFT_SATELLITE_CLONE_URL=http://<your-host>:3011
+```
+
+Verification probes:
+
+```bash
+bun tests/probe-clone-chain.ts     # detector gates (stubs + RAM hook)
+bun tests/probe-clone-synth.ts     # REAL fish/f5 synthesis through the worker
+bun tests/probe-timbre-conform.ts  # timbre morph moves LTASS toward the reference
+```
 
 ## Deploy to a server / container
 
@@ -278,8 +325,17 @@ caddy run --config Caddyfile.prod               # single public entry, XTransfor
 ```
 
 - The reference deployment (Railway) additionally installs **vosk** and
-  **piper-tts** into a Python venv with `fa_IR-amir` + `en_US-amy` voice models,
-  so the local runtime tiers really execute in production.
+  **piper-tts** into a Python venv with `fa_IR-amir` + `en_US-amy` voice models
+  (+ `en_US-ryan` for male timbre matching), so the local runtime tiers really
+  execute in production.
+- **Container memory and the clone engines**: on shared platforms the cgroup
+  caps the service at its own slice (the reference deployment shows ~954 MB).
+  The RAM gates read the cgroup limit honestly — the GB-class clone engines
+  refuse to spawn there. Three ways to get real cloning: run
+  `scripts/setup-local-clone.sh` on a bigger plan/volume, point
+  `VOXSHIFT_SATELLITE_CLONE_URL` at your own machine, or add
+  `ELEVENLABS_API_KEY`. The timbre-conformed DSP level (6) works everywhere
+  with zero extra RAM.
 - Keep the SQLite file (and `db/.provider-secret`) on a persistent volume —
   recreating the secret invalidates previously stored provider keys
   (they report `DECRYPT_FAILED` honestly rather than silently failing).
@@ -381,13 +437,14 @@ APIs and persistence.
 
 ## Version
 
-**v3.7** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
+**v3.8** — see [CHANGELOG.md](./CHANGELOG.md) for the full history
 (v1 single-pair translator → v2 contacts/multi-provider → v3 honest local
 runtimes, chain telemetry, phrasebook at the point of conversation, warm
 worker pool, honest chain tooltips, history filters, benchmark-backed model
 choices, local-first voice-cloning priority chain, MEASURED local clone
 engines (fish-speech v1.5.0 official surface + F5-TTS) with cgroup-aware
-honest RAM gating).
+honest RAM gating, v3.8 timbre-conformed reference mimicry + satellite
+cloning + mobile viewport fixes).
 
 ## License
 

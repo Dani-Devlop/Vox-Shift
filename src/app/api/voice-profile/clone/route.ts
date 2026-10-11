@@ -110,6 +110,7 @@ export async function POST(req: NextRequest) {
       },
       select: { id: true },
     })
+    if (!created) throw new Error('profile create returned no row')
     if (!ID_RE.test(created.id)) throw new Error('generated profile id not clone-safe')
 
     // 2) persist the reference WAV ON-BOX (never leaves the machine)

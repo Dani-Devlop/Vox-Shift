@@ -94,8 +94,11 @@ export function SettingsCard({
           <div className="min-w-0">
             <p className="text-xs font-semibold text-teal-200">Auto-detect language</p>
             <p className="mt-0.5 text-[11px] leading-snug text-zinc-500">
-              Two-way conversation: speak either language — it is detected and translated to the
-              other side ({LANG_META.fa.name} ↔ {LANG_META[otherLang].name}). Overrides Dub/Interpreter.
+              Two-way conversation: speak either language — it is detected per utterance and
+              translated to the other side ({LANG_META.fa.name} ↔ {LANG_META[otherLang].name}).
+              Persian runs on the Persian-optimized recognizer; English — including English words
+              in the middle of a Persian sentence — on the multilingual whisper recognizer, merged
+              by word timing. Overrides Dub/Interpreter.
             </p>
           </div>
           <Switch

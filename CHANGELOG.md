@@ -1,5 +1,45 @@
 # Changelog
 
+## v3.8.0 — Your voice, actually heard: timbre-conformed mimicry + satellite cloning + mobile fixes
+- **Voice mimicry fix (the "robotic default" complaint, root-caused)**: the DEFAULT profile mode is
+  `voice-match`, and its LOCAL branch never applied ANY conformance — production served the raw piper
+  preset with zero pitch/timbre work. v3.8.0: **(a)** every enrollment now persists its reference WAV
+  on-box (keyed by the profile id, not only for cloud clones); **(b)** a new **timbre-conformed DSP
+  level** (`engines/timbre-conform.ts`, pure TS, zero deps, no RAM floor) measures the reference
+  speaker's mean F0 (autocorrelation) + long-term average spectrum (LTASS), then conform the piper
+  base output by playback-rate F0 alignment **plus a static spectral-envelope morph** (STFT → smoothed
+  per-bin magnitude ratio → phase-safe overlap-add) toward the speaker's formants/tilt — the enrolled
+  tone, not a preset; **(c)** the voice-match local branch runs it automatically, and clone profiles
+  get it as the terminal DSP level BEFORE pitch-conformed (which stays the no-reference fallback);
+  **(d)** the piper base F0 is measured once per language and cached so TTS speed pre-compensation
+  restores the exact requested tempo.
+- **Satellite cloning (the "use the whole RAM" answer for small containers)**: new
+  `mini-services/clone-satellite/server.ts` (port 3011) runs the REAL Fish Speech / F5-TTS /
+  Chatterbox on any machine that can afford them (your own PC/server — 500 GB-class hosts welcome)
+  and exposes `POST /clone {text, lang, wavBase64, refText?} → {ok, wavBase64, sr, ms, engine}` +
+  `GET /healthz`. The app inserts it in the chain as **priority 4** (after locals, before ElevenLabs)
+  as soon as `VOXSHIFT_SATELLITE_CLONE_URL` is set; every attempt is recorded in the honest trail.
+  Results are `degraded: false` — a REAL clone served by your hardware.
+- **Reference resolution v3.8**: `cloneRefWavPathAny(providerProfileId, profileId)` tries the provider
+  voice id first, then the profile id — voice-match and satellite/local clone profiles share one
+  convention (`db/audio/clone-ref/{id}.wav`). `profileId` now flows end-to-end (pipeline, preview
+  REST, socket payload, client emit).
+- **Code-switching upgrade path**: `VOXSHIFT_WHISPER_MODEL` env selects the resident whisper model
+  (`tiny` bundled default; `base` = ~2× RTF at int8, measurably better embedded-English + accent
+  capture) and the worker boot timeout grew 30→90 s so a non-bundled model can download on first
+  boot. Settings auto-detect explainer now states exactly how Persian (vosk) and English-in-Persian
+  (whisper merge) are recognized.
+- **Mobile fixes (the "settings/taskbar invisible on my phone" complaint)**: root cause was
+  `viewportFit: "cover"` — on iPhone it anchors `fixed bottom-0` UI UNDER Safari's toolbar + home
+  indicator, so the bottom taskbar was untouchable/invisible. Removed (plus `maximumScale` — pinch
+  zoom is an a11y right). Shell `min-h-screen` → `min-h-dvh` (100vh is the LARGE viewport on iOS;
+  dvh tracks the real one), desktop rail `h-dvh`, bottom-bar spacer sized with
+  `calc(4.5rem + env(safe-area-inset-bottom))` so the footer never slides behind the nav, taskbar
+  labels 9→10 px and zinc-500→zinc-400 (readable in daylight), grid bottom padding honors safe areas.
+- **About page v3.8.0**: chain description covers satellite-clone + timbre-conformed; version-driven
+  label bumped. package.json/diagnostics/CHANGELOG = 3.8.0 (per the version-scheme policy: important
+  feature round → minor bump).
+
 ## v3.7.0 — Fish Speech + F5-TTS run for real; honest cgroup-aware RAM probe
 - **Both lead local clone engines verified by measurement (the "least 2 models should work" round)**: `clone-tts-worker.py` now drives the **official fish-speech v1.5.0 local surface** (`tools.inference_engine.TTSInferenceEngine` = llama_queue + firefly-gan VQ decoder, zero-shot from a reference WAV + transcript) instead of the speculative `FishSpeechTTS` probe that no release ever exposed. Measured on a 2-core CPU host: **fish-speech peak RSS 2306 MB, 3.4 s audio in ~57 s cold** · **f5-tts peak RSS 2875 MB, 3.4 s audio in ~150 s cold**. Both produce real WAV through the JSON-stdout worker contract.
 - **Honest cgroup-aware RAM probe (the "1 GB of a 500 GB shared host" question, answered in the UI)**: `ramProbe()` in `src/lib/voice/clone-chain.ts` now reads the **cgroup memory limit** (v2 `memory.max` / v1 `limit_in_bytes`) alongside `/proc/meminfo`. On shared platforms meminfo describes the HOST (hundreds of GB shared by all projects) while the cgroup caps this container at its own slice — when the two disagree, usable RAM is capped at the cgroup limit so the gates never promise memory the platform will OOM-kill, and the detection notes it in plain words ("host reports X MB free, but this container is cgroup-capped to Y MB — the platform slice is what binds"). When meminfo is already cgroup-scoped (lxcfs-style) it is trusted as-is. New **`VOXSHIFT_RAM_BUDGET_MB` operator override** wins outright for hosts where the operator knows better; `VOXSHIFT_TEST_RAM_MB` stays the test hook. The About page renders the whole picture: usable MB + source (override / container-scoped / cgroup-capped slice of a bigger host) + cgroup cap + host meminfo numbers.

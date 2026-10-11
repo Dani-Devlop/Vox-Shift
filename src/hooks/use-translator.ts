@@ -431,7 +431,7 @@ export function useTranslator() {
       detectionModeRef.current = s.detectionMode
       setDetectionModeState(s.detectionMode)
     }
-    if (typeof s.routingPolicy === 'string' && ROUTING_POLICY_VALUES.includes(s.routingPolicy)) {
+    if (typeof s.routingPolicy === 'string' && (ROUTING_POLICY_VALUES as readonly string[]).includes(s.routingPolicy)) {
       routingPolicyRef.current = s.routingPolicy
       setRoutingPolicyState(s.routingPolicy)
     }
@@ -1613,6 +1613,7 @@ export function useTranslator() {
             pitchRatio: useProfile ? bProf!.pitchRatio : 1.0,
             profileMode: useProfile ? bProf!.mode : undefined,
             providerProfileId: useProfile ? bProf!.providerProfileId ?? undefined : undefined,
+            profileId: useProfile ? bProf!.id : undefined,
             providerModel: useProfile ? bProf!.providerModel ?? undefined : undefined,
             stability: useProfile ? bProf!.stability : undefined,
             providerSimilarity: useProfile ? bProf!.providerSimilarity ?? undefined : undefined,
@@ -1773,6 +1774,7 @@ export function useTranslator() {
       pitchRatio: useProfile ? prof!.pitchRatio : 1.0,
       profileMode: useProfile ? prof!.mode : undefined,
       providerProfileId: useProfile ? prof!.providerProfileId ?? undefined : undefined,
+      profileId: useProfile ? prof!.id : undefined,
       providerModel: useProfile ? prof!.providerModel ?? undefined : undefined,
       stability: useProfile ? prof!.stability : undefined,
       providerSimilarity: useProfile ? prof!.providerSimilarity ?? undefined : undefined,

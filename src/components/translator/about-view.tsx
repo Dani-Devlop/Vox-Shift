@@ -177,7 +177,7 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
           Persian ↔ English (plus Deutsch, Français, Español, العربية, Türkçe, Italiano) · Auto-detect
           two-way direction with ASR-level language detection · code-switching (Persian sentences with
           embedded English words) · Natural / Clean / Literal / Formal / Casual
-          styles · local-first engine chains for ASR / translation / TTS / cloning (v3.7.0) ·
+          styles · local-first engine chains for ASR / translation / TTS / cloning (v3.8.0) ·
           persistent resumable conversations · live captions · latency telemetry.
         </p>
       </section>
@@ -211,7 +211,13 @@ export function AboutView({ connected, speaker }: { connected?: boolean; speaker
         <p className="mb-3 text-[11px] leading-relaxed text-zinc-500">
           Cloned profiles are served by the first AVAILABLE engine in this order — each gate
           (python package · model weights · free RAM · API key) is probed for real. The terminal
-          pitch-conformed level is an honest preset match, never presented as a clone.
+          DSP levels are honest: <span className="font-mono text-amber-400">timbre-conformed</span> morphs
+          F0 + spectral envelope toward your enrolled reference (needs a re-enroll on v3.8+ to
+          sound like you), and <span className="font-mono text-amber-400">pitch-conformed</span> is a
+          plain preset match — neither is presented as a clone. Point
+          <span className="font-mono text-zinc-400"> VOXSHIFT_SATELLITE_CLONE_URL</span> at a machine
+          running <span className="font-mono text-zinc-400">mini-services/clone-satellite</span> to add
+          real Fish Speech / F5-TTS / Chatterbox on your own RAM.
         </p>
         {!chain ? (
           <div className="flex items-center gap-2 py-3 text-sm text-zinc-500">

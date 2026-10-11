@@ -224,18 +224,20 @@ export async function POST(req: NextRequest) {
       },
     })
 
-    // Persist the reference WAV ON-BOX keyed by the provider voice id so the
-    // LOCAL zero-shot clone engines (Fish Speech / F5-TTS / Chatterbox) can
-    // serve this profile later if they become available — the local-first
-    // chain (v3.5.0) resolves the reference at synthesis time. Best-effort:
-    // a write failure never fails the enrollment (ElevenLabs already holds a
-    // copy; voice-match needs no reference).
-    if (clone && allPcms.length > 0) {
+    // Persist the reference WAV ON-BOX (v3.8.0: for EVERY profile, not only
+    // cloud clones) under BOTH keys:
+    //   · {profile.id}.wav           — the timbre-conformed DSP level + local
+    //                                  engines resolve it for voice-match too
+    //   · {clone.providerProfileId}.wav — cloud clone profiles (unchanged)
+    // The local-first chain resolves the reference at synthesis time.
+    // Best-effort: a write failure never fails the enrollment.
+    if (allPcms.length > 0) {
       try {
         const refDir = path.join(process.cwd(), 'db', 'audio', 'clone-ref')
         await mkdir(refDir, { recursive: true })
         const refWav = pcmToWav(Buffer.from(allPcms[0].buffer, allPcms[0].byteOffset, allPcms[0].byteLength), sampleRate)
-        await writeFile(path.join(refDir, `${clone.providerProfileId}.wav`), refWav)
+        await writeFile(path.join(refDir, `${profile.id}.wav`), refWav)
+        if (clone) await writeFile(path.join(refDir, `${clone.providerProfileId}.wav`), refWav)
       } catch (err) {
         console.error('[voice-profile] reference WAV persist failed (non-fatal):', err instanceof Error ? err.message : err)
       }

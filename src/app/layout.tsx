@@ -38,8 +38,9 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  maximumScale: 1,
-  viewportFit: "cover",
+  // v3.8.0 mobile fix: NO viewportFit:cover (it anchors fixed-bottom UI under
+  // Safari's toolbar + home indicator so the bottom taskbar is untouchable) and
+  // NO maximumScale (pinch-zoom is an accessibility right).
   themeColor: "#09090b",
 };
 

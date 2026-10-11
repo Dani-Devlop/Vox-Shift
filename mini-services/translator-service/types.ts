@@ -23,6 +23,8 @@ export interface UtteranceRequest {
   profileMode?: 'clone' | 'voice-match'
   /** Provider-side voice id (ElevenLabs voice_id) for cloned profiles. */
   providerProfileId?: string
+  /** DB profile id (v3.8.0 — reference WAV is also keyed by it on disk). */
+  profileId?: string
   /** Cloning model key ('balanced' | 'quality') selected on the profile. */
   providerModel?: string
   /** Cloner stability 0..1 (higher = steadier, lower = more expressive). */
@@ -154,6 +156,8 @@ export interface TextTranslateRequest {
   profileMode?: 'clone' | 'voice-match'
   /** Provider-side voice id (ElevenLabs voice_id) for cloned profiles. */
   providerProfileId?: string
+  /** DB profile id (v3.8.0 — reference WAV is also keyed by it on disk). */
+  profileId?: string
   /** Cloning model key ('balanced' | 'quality') selected on the profile. */
   providerModel?: string
   /** Cloner stability 0..1 (higher = steadier, lower = more expressive). */

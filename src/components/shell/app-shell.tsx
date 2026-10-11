@@ -40,14 +40,16 @@ interface AppShellProps {
 
 export function AppShell({ view, onViewChange, header, children, footer }: AppShellProps) {
   return (
-    <div className="lt-bg-glow flex min-h-screen flex-col bg-zinc-950 text-zinc-100">
+    // v3.8.0: min-h-dvh (not min-h-screen) — 100vh on iOS is the LARGE viewport
+    // so the shell grows past the visible screen; dvh tracks the real one.
+    <div className="lt-bg-glow flex min-h-dvh flex-col bg-zinc-950 text-zinc-100">
       {header}
 
       <div className="mx-auto flex w-full max-w-6xl flex-1 gap-0 px-0 sm:px-6 lg:gap-6">
         {/* Desktop left rail */}
         <nav
           aria-label="Primary"
-          className="sticky top-0 hidden h-screen shrink-0 flex-col gap-1 py-6 lg:flex lg:w-14 xl:w-44"
+          className="sticky top-0 hidden h-dvh shrink-0 flex-col gap-1 py-6 lg:flex lg:w-14 xl:w-44"
         >
           {APP_VIEWS.map(({ id, label, short, icon: Icon }) => {
             const active = view === id
@@ -92,7 +94,7 @@ export function AppShell({ view, onViewChange, header, children, footer }: AppSh
         aria-label="Primary"
         className="fixed inset-x-0 bottom-0 z-40 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur lg:hidden"
       >
-        <div className="mx-auto grid max-w-md grid-cols-6 px-1 pb-[max(0.375rem,env(safe-area-inset-bottom))] pt-1.5">
+        <div className="mx-auto grid max-w-md grid-cols-6 px-1 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-1.5">
           {APP_VIEWS.map(({ id, short, icon: Icon }) => {
             const active = view === id
             return (
@@ -102,8 +104,10 @@ export function AppShell({ view, onViewChange, header, children, footer }: AppSh
                 onClick={() => onViewChange(id)}
                 aria-current={active ? 'page' : undefined}
                 className={cn(
-                  'relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 py-1 text-[9px] font-semibold transition-colors',
-                  active ? 'text-emerald-300' : 'text-zinc-500 active:text-zinc-300'
+                  // v3.8.0: 10px labels + zinc-400 (9px/zinc-500 was unreadable
+                  // on phones in daylight — reported invisible taskbar text).
+                  'relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 py-1 text-[10px] font-semibold transition-colors',
+                  active ? 'text-emerald-300' : 'text-zinc-400 active:text-zinc-200'
                 )}
               >
                 {/* Active top indicator */}
@@ -128,8 +132,9 @@ export function AppShell({ view, onViewChange, header, children, footer }: AppSh
         </div>
       </nav>
 
-      {/* Spacer so content never hides behind the mobile bottom bar */}
-      <div aria-hidden className="h-16 lg:hidden" />
+      {/* Spacer so the footer never slides behind the mobile bottom bar
+          (nav ≈ 64.5px + whatever safe-area the device reports). */}
+      <div aria-hidden className="h-[calc(4.5rem+env(safe-area-inset-bottom))] lg:hidden" />
 
       {footer}
     </div>

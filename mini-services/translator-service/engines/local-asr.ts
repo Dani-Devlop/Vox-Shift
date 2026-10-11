@@ -305,14 +305,20 @@ function killWhisperWorker(): void {
   }
 }
 
-function spawnWhisperWorker(modelSize = 'tiny'): WhisperWorker | null {
+// v3.8.0: model selectable via VOXSHIFT_WHISPER_MODEL ('tiny' bundled default;
+// 'base' upgrades embedded-English + accent capture at ~2× RTF, still int8).
+function spawnWhisperWorker(
+  modelSize = process.env.VOXSHIFT_WHISPER_MODEL?.trim() || 'tiny'
+): WhisperWorker | null {
   if (freeMemMB() < WHISPER_MIN_AVAIL_MB) return null
   const script = join(dirname(fileURLToPath(import.meta.url)), 'whisper-worker.py')
   const proc = spawn('python3', [script, modelSize], { stdio: ['pipe', 'pipe', 'pipe'] })
   const w: WhisperWorker = { proc, ready: null as unknown as Promise<void>, lastUsed: Date.now(), model: modelSize }
   w.ready = new Promise<void>((resolve, reject) => {
     let buf = ''
-    const timer = setTimeout(() => reject(new Error('whisper worker boot timeout')), 30_000)
+    // 90 s (v3.8.0): a non-bundled model (e.g. VOXSHIFT_WHISPER_MODEL=base)
+    // downloads from HF on first boot — 30 s killed that cold boot mid-download.
+    const timer = setTimeout(() => reject(new Error('whisper worker boot timeout')), 90_000)
     const onData = (d: string) => {
       buf += d
       let idx: number

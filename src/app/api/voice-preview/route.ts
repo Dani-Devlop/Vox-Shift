@@ -134,6 +134,7 @@ export async function POST(req: NextRequest) {
         speed: Math.min(2, Math.max(0.5, profile.speedAdjust || 1)),
         pitchRatio: clampPitchRatio(profile.pitchRatio),
         providerProfileId: profile.providerProfileId ?? undefined,
+        profileId: profile.id,
         providerModel: profile.providerModel ?? undefined,
         stability: profile.stability ?? 0.5,
         providerSimilarity: profile.providerSimilarity ?? 0.8,
@@ -145,7 +146,9 @@ export async function POST(req: NextRequest) {
           voice: via.providerId,
           voiceMode: profile.mode,
           voiceUsed: via.degraded
-            ? `${profile.name} · pitch-conformed match (NOT a clone)`
+            ? via.providerId === 'timbre-conformed'
+              ? `${profile.name} · timbre-conformed match (F0 + spectral morph toward your reference — NOT a neural clone)`
+              : `${profile.name} · pitch-conformed match (NOT a clone)`
             : `${profile.name} · ${via.providerId}`,
           degraded: via.degraded === true,
           cloneAttempts: via.cloneAttempts,

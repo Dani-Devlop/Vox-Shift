@@ -339,7 +339,8 @@ function runFileOut(
 async function piperTTS(
   text: string,
   lang: string,
-  speed: number
+  speed: number,
+  voiceFile?: string
 ): Promise<{ buffer: Buffer; via: 'warm' | 'cli' } | null> {
   const rt = await detectLocalRuntimes()
   const pr = rt.runtimes.find((r) => r.id === 'local:piper-tts')
@@ -347,8 +348,11 @@ async function piperTTS(
   // Language-aware voice selection — the runtime probe only reports the FIRST
   // installed voice, which made English output use the Persian voice (accented
   // speech). Map the output language to its dedicated voice, falling back to
-  // whatever the probe found.
-  const wanted = (lang || '').toLowerCase().startsWith('fa') ? PIPER_VOICES.fa : PIPER_VOICES.en
+  // whatever the probe found. v3.8.0: an explicit `voiceFile` override wins —
+  // the timbre-conformed level uses it to pick the gender-appropriate voice
+  // (en_US-ryan-high for low-F0 references) before conforming.
+  const defaultVoice = (lang || '').toLowerCase().startsWith('fa') ? PIPER_VOICES.fa : PIPER_VOICES.en
+  const wanted = voiceFile && existsSync(`${MODELS_ROOT}/piper/${voiceFile}`) ? voiceFile : defaultVoice
   const modelFile = existsSync(`${MODELS_ROOT}/piper/${wanted}`) ? wanted : pr.model
   if (!modelFile) return null
   const voice = `${MODELS_ROOT}/piper/${modelFile}`
@@ -414,10 +418,10 @@ async function espeakTTS(
  */
 export async function localTTS(
   text: string,
-  opts: { lang?: string; speed?: number } = {}
+  opts: { lang?: string; speed?: number; voiceFile?: string } = {}
 ): Promise<{ buffer: Buffer; format: 'wav'; via: 'cache' | 'warm' | 'cli' | 'espeak' }> {
   const lang = opts.lang ?? 'en'
-  const key = ttsCacheKey(text, lang, opts.speed ?? 1)
+  const key = ttsCacheKey(text, `${lang}|${opts.voiceFile ?? ''}`, opts.speed ?? 1)
   const cached = ttsCache.get(key)
   if (cached) {
     // LRU refresh
@@ -427,7 +431,7 @@ export async function localTTS(
   }
   let out: { buffer: Buffer; format: 'wav'; via: 'warm' | 'cli' | 'espeak' } | null = null
   try {
-    const piper = await piperTTS(text, lang, opts.speed ?? 1)
+    const piper = await piperTTS(text, lang, opts.speed ?? 1, opts.voiceFile)
     if (piper) out = { buffer: piper.buffer, format: 'wav', via: piper.via }
   } catch {
     /* fall through to espeak */

@@ -169,6 +169,8 @@ async function translateAndSpeak(
     pitchRatio?: number
     profileMode?: 'clone' | 'voice-match'
     providerProfileId?: string
+    /** DB profile id (v3.8.0 — reference WAV is also keyed by it on disk). */
+    profileId?: string
     providerModel?: string
     stability?: number
     providerSimilarity?: number
@@ -342,6 +344,7 @@ async function translateAndSpeak(
       pitchRatio: req.pitchRatio,
       profileMode: req.profileMode,
       providerProfileId: req.providerProfileId,
+      profileId: req.profileId,
       providerModel: req.providerModel,
       stability: req.stability,
       providerSimilarity: req.providerSimilarity,

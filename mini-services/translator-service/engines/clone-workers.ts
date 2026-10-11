@@ -24,20 +24,36 @@ export function isLocalCloneEngine(id: string): boolean {
 }
 
 /**
- * Resolve the enrolled reference WAV for a clone profile. Convention (kept by
- * both enrollment routes): db/audio/clone-ref/{providerProfileId}.wav.
+ * Resolve the enrolled reference WAV for a clone profile. Conventions:
+ *   · db/audio/clone-ref/{providerProfileId}.wav  (cloud-enrolled clones)
+ *   · db/audio/clone-ref/{profileId}.wav          (v3.8.0 — EVERY enrollment
+ *     persists its first take under the profile's own id so the timbre-
+ *     conformed DSP level and the satellite/local engines can morph toward it)
+ *   · db/audio/contacts/{id}.wav
  * Override the directory with VOXSHIFT_CLONE_REF_DIR.
  */
 export function cloneRefWavPath(providerProfileId: string | undefined): string | null {
-  if (!providerProfileId || !/^[A-Za-z0-9_-]{1,64}$/.test(providerProfileId)) return null
+  return cloneRefWavPathAny(providerProfileId, providerProfileId)
+}
+
+/** Try the provider voice id first, then the profile id (v3.8.0). */
+export function cloneRefWavPathAny(
+  providerProfileId: string | null | undefined,
+  profileId: string | null | undefined
+): string | null {
+  const ids = [providerProfileId, profileId].filter(
+    (id): id is string => Boolean(id && /^[A-Za-z0-9_-]{1,64}$/.test(id))
+  )
   const dirs = [
     process.env.VOXSHIFT_CLONE_REF_DIR,
     join(REPO_ROOT, 'db', 'audio', 'clone-ref'),
     join(REPO_ROOT, 'db', 'audio', 'contacts'),
   ].filter((d): d is string => Boolean(d))
-  for (const dir of dirs) {
-    const p = join(dir, `${providerProfileId}.wav`)
-    if (existsSync(p)) return p
+  for (const id of ids) {
+    for (const dir of dirs) {
+      const p = join(dir, `${id}.wav`)
+      if (existsSync(p)) return p
+    }
   }
   return null
 }
@@ -129,4 +145,58 @@ export function localCloneSynthesize(
       reject(e instanceof Error ? e : new Error(String(e)))
     }
   })
+}
+
+/**
+ * SATELLITE clone synthesis (v3.8.0): POST the text + reference WAV (base64)
+ * to a user-hosted satellite worker (mini-services/clone-satellite) that runs
+ * the REAL engines (Fish Speech / F5-TTS / Chatterbox) on hardware with the
+ * RAM to afford them — the Railway container stays small, the cloning quality
+ * does not. Contract mirrors the local worker: {ok, wavBase64, sr?, ms?, engine?}.
+ */
+const SATELLITE_RETRY_DELAYS_MS = [500, 1200, 2600]
+
+export function satelliteCloneSynthesize(
+  baseUrl: string,
+  text: string,
+  refWavPath: string,
+  opts?: { refText?: string | null; lang?: string; timeoutMs?: number }
+): Promise<LocalCloneSynthResult> {
+  const timeoutMs = opts?.timeoutMs ?? 240_000
+  const body = JSON.stringify({
+    text: text.slice(0, 2000),
+    lang: opts?.lang ?? 'en',
+    refText: opts?.refText ?? null,
+    wavBase64: readFileSync(refWavPath).toString('base64'),
+  })
+  const attemptOnce = async (): Promise<LocalCloneSynthResult> => {
+    const res = await fetch(new URL('/clone', baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(timeoutMs),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`satellite responded ${res.status}: ${detail.slice(0, 200)}`)
+    }
+    const msg = (await res.json()) as { ok?: boolean; error?: string; wavBase64?: string; sr?: number; ms?: number; engine?: string }
+    if (!msg.ok || !msg.wavBase64) throw new Error(`satellite synthesis failed: ${msg.error ?? 'no audio returned'}`)
+    return { buffer: Buffer.from(msg.wavBase64, 'base64'), sampleRate: msg.sr ?? 24000, ms: msg.ms ?? 0 }
+  }
+  return (async () => {
+    let lastErr: unknown
+    for (let attempt = 0; attempt <= SATELLITE_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        return await attemptOnce()
+      } catch (err) {
+        lastErr = err
+        const msg = err instanceof Error ? err.message : String(err)
+        const transient = /429|rate|too many|5\d\d|timeout|ECONN|fetch failed|network/i.test(msg)
+        if (!transient || attempt === SATELLITE_RETRY_DELAYS_MS.length) break
+        await new Promise((r) => setTimeout(r, SATELLITE_RETRY_DELAYS_MS[attempt]))
+      }
+    }
+    throw lastErr instanceof Error ? lastErr : new Error(String(lastErr))
+  })()
 }

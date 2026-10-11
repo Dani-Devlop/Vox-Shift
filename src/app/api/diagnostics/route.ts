@@ -26,7 +26,7 @@ export const maxDuration = 60
 // demo successes, no secrets ever returned.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const APP_VERSION = '3.7.0'
+const APP_VERSION = '3.8.0'
 /**
  * Transport probe target — the translator mini-service directly. The probe
  * performs a REAL engine.io v4 polling handshake (the same first request a

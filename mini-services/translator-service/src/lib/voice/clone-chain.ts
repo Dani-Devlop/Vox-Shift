@@ -3,13 +3,17 @@
 //   · the translator mini-service resolves the ACTIVE engine at synthesis time
 //   · the Next.js diagnostics API reports the chain + active engine (About page)
 //
-// Priority order (v3.5.0):
-//   1. fish-speech      LOCAL  — Fish Speech zero-shot clone (~2-4 GB, per docs)
-//   2. f5-tts           LOCAL  — F5-TTS Base (RTF 0.0394 on L20 GPU, ~4-8 GB)
-//   3. chatterbox       LOCAL  — Chatterbox Turbo (~75 ms, 5 s zero-shot reference)
-//   4. elevenlabs-ivc   CLOUD  — existing ElevenLabs Instant Voice Cloning
-//   5. pitch-conformed  DSP    — pitch-conformed preset match (always available,
-//                                labeled honestly — it is NOT a clone)
+// Priority order (v3.8.0):
+//   1. fish-speech        LOCAL  — Fish Speech zero-shot clone (~2-4 GB, per docs)
+//   2. f5-tts             LOCAL  — F5-TTS Base (RTF 0.0394 on L20 GPU, ~4-8 GB)
+//   3. chatterbox         LOCAL  — Chatterbox Turbo (~75 ms, 5 s zero-shot reference)
+//   4. satellite-clone    CLOUD  — YOUR host running mini-services/clone-satellite
+//                                  (real engines on RAM-rich hardware, v3.8.0)
+//   5. elevenlabs-ivc     CLOUD  — existing ElevenLabs Instant Voice Cloning
+//   6. timbre-conformed   DSP    — F0 + spectral-envelope morph toward the
+//                                  enrolled reference (v3.8.0; no RAM floor)
+//   7. pitch-conformed    DSP    — pitch-conformed preset match (always available,
+//                                  labeled honestly — it is NOT a clone)
 //
 // An engine is AVAILABLE only when ALL of its gates pass:
 //   a. python package import probe (real `import` in a child python3)
@@ -25,7 +29,14 @@
 import { spawn } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
 
-export type CloneEngineId = 'fish-speech' | 'f5-tts' | 'chatterbox' | 'elevenlabs-ivc' | 'pitch-conformed'
+export type CloneEngineId =
+  | 'fish-speech'
+  | 'f5-tts'
+  | 'chatterbox'
+  | 'satellite-clone'
+  | 'elevenlabs-ivc'
+  | 'timbre-conformed'
+  | 'pitch-conformed'
 
 export interface CloneChainEntry {
   id: CloneEngineId
@@ -406,7 +417,24 @@ async function detectChain(): Promise<CloneChainResult> {
     })
   }
 
-  // Priority 4 — ElevenLabs IVC (cloud): real key gate only (a live account
+  // Priority 4 — SATELLITE clone (v3.8.0): a host YOU control running the
+  // real engines (mini-services/clone-satellite). The one-switch answer to
+  // "the platform caps my container at ~1 GB": the container stays small,
+  // the cloning quality runs on hardware that can afford it.
+  const satelliteUrl = (process.env.VOXSHIFT_SATELLITE_CLONE_URL ?? '').trim()
+  chain.push({
+    id: 'satellite-clone',
+    name: 'Satellite clone (your host)',
+    cls: 'cloud',
+    available: Boolean(satelliteUrl),
+    why: satelliteUrl
+      ? `ready (VOXSHIFT_SATELLITE_CLONE_URL configured — ${satelliteUrl})`
+      : 'not configured — run mini-services/clone-satellite on any RAM-rich machine and set VOXSHIFT_SATELLITE_CLONE_URL to upgrade clone profiles to real Fish Speech / F5-TTS / Chatterbox',
+    minRamMb: 0,
+    weightsPath: null,
+  })
+
+  // Priority 5 — ElevenLabs IVC (cloud): real key gate only (a live account
   // probe runs in the diagnostics self-test, not in the hot path).
   const keyOk = elevenLabsKeyPresent()
   chain.push({
@@ -419,7 +447,20 @@ async function detectChain(): Promise<CloneChainResult> {
     weightsPath: null,
   })
 
-  // Priority 5 — pitch-conformed preset match (local DSP): always available.
+  // Priority 6 — timbre-conformed match (v3.8.0 local DSP): F0 + spectral
+  // envelope morph toward the enrolled reference. Always offered; it needs a
+  // reference WAV on disk to actually morph (falls through without one).
+  chain.push({
+    id: 'timbre-conformed',
+    name: 'Timbre-conformed match (local DSP)',
+    cls: 'dsp',
+    available: true,
+    why: 'always available — F0 + spectral-envelope morph toward the enrolled reference (needs a reference WAV; without one it falls through to pitch-conformed)',
+    minRamMb: 0,
+    weightsPath: null,
+  })
+
+  // Priority 7 — pitch-conformed preset match (local DSP): always available.
   chain.push({
     id: 'pitch-conformed',
     name: 'Pitch-conformed match (local DSP)',
