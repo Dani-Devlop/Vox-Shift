@@ -23,18 +23,24 @@ honest local runtimes as failover.
 ## Table of contents
 
 1. [Feature tour](#feature-tour)
-2. [Engine architecture & failover chain](#engine-architecture--failover-chain)
-3. [Tech stack](#tech-stack)
-4. [Run locally](#run-locally)
-5. [Environment variables](#environment-variables)
-6. [Deploy to a server / container](#deploy-to-a-server--container)
-7. [Database](#database)
-8. [Voice identity & voice contacts](#voice-identity--voice-contacts)
-9. [Provider routing (bring your own keys)](#provider-routing-bring-your-own-keys)
-10. [Realtime API (socket.io events)](#realtime-api-socketio-events)
-11. [Tests](#tests)
-12. [Known limitations](#known-limitations)
-13. [Version](#version)
+2. **[Zero-to-hundred setup guide](#zero-to-hundred-setup-guide)** ← start here
+   (full manual install: models, engines, satellite, cloud keys, verification,
+   troubleshooting)
+3. [Engine architecture & failover chain](#engine-architecture--failover-chain)
+4. [Tech stack](#tech-stack)
+5. [Run locally](#run-locally)
+6. [Environment variables](#environment-variables)
+7. [Deploy to a server / container](#deploy-to-a-server--container)
+8. [Database](#database)
+9. [Voice identity & voice contacts](#voice-identity--voice-contacts)
+10. [Provider routing (bring your own keys)](#provider-routing-bring-your-own-keys)
+11. [Realtime API (socket.io events)](#realtime-api-socketio-events)
+12. [Tests](#tests)
+13. [Known limitations](#known-limitations)
+14. [Version](#version)
+
+> 🇮🇷 **راهنمای کامل فارسی (صفر تا صد):** [docs/SETUP-FA.md](./docs/SETUP-FA.md)
+> — the same guide, fully in Persian.
 
 ---
 
@@ -163,6 +169,311 @@ honest local runtimes as failover.
 
 ---
 
+## Zero-to-hundred setup guide
+
+A complete, manual, copy-paste walkthrough: from a bare machine to VoxShift
+running with local ASR, local TTS, real voice cloning (or a satellite), and
+cloud keys. Every path and env var below matches what the code actually
+probes — no guessing.
+
+> Persian version: [docs/SETUP-FA.md](./docs/SETUP-FA.md) · one-shot engine
+> installer: [scripts/setup-local-clone.sh](./scripts/setup-local-clone.sh)
+
+### 0 · What you need
+
+- **OS**: Linux or macOS (Windows: use WSL2).
+- **Bun** ≥ 1.1 (`curl -fsSL https://bun.sh/install | bash`) — or Node 20+ with
+  equivalent package-manager substitutions.
+- **Python 3.10–3.12** + `pip` + `venv` (for the local ASR/TTS/clone runtimes).
+- **RAM / disk budget** (measured floors — the app refuses to load an engine it
+  cannot afford, honestly):
+
+| Component | RAM floor (load) | Disk | Role |
+| --- | --- | --- | --- |
+| vosk small fa (`vosk-model-small-fa-0.42`) | ~150 MB | ~50 MB | Persian ASR — primary |
+| vosk small en (`vosk-model-small-en-us-0.15`) | ~150 MB | ~40 MB | English ASR fallback |
+| faster-whisper tiny | 350 MB free guard | **bundled** (75 MB, in-repo) | English ASR + language auto-detect + code-switch merge |
+| piper voices (amir / amy / ryan) | ~80 MB per resident voice | 60–110 MB each | local TTS |
+| **Fish Speech v1.5.0** | **2600 MB** | ~1.5 GB | zero-shot voice clone |
+| **F5-TTS** | **2900 MB** | ~1.4 GB | zero-shot voice clone |
+| **Chatterbox** | **2600 MB** | 2–4 GB | zero-shot voice clone |
+| ElevenLabs IVC (cloud) | 0 | 0 | real clone, no RAM |
+| Timbre-conformed DSP | 0 | 0 | always-available tone matching |
+
+- A `MODELS_ROOT` directory for models (default **`/home/z/models`**, override
+  with `VOXSHIFT_MODELS_DIR`). Everything under it is found automatically.
+
+### 1 · Get the app running (5 minutes)
+
+```bash
+git clone https://github.com/Dani-Devlop/Vox-Shift.git
+cd Vox-Shift
+cp .env.example .env          # only DATABASE_URL is required
+bun install
+bun run db:push               # create/sync the SQLite schema
+
+# terminal 1 — the Next.js app:
+bun run dev                   # http://localhost:3000
+
+# terminal 2 — the realtime translator service:
+cd mini-services/translator-service
+bun install                   # socket.io + prisma + z-ai sdk
+bunx prisma generate          # regenerate the Prisma client for this service
+bun run dev                   # socket.io on :3003
+```
+
+Open `http://localhost:3000`. Typed phrases already work at this point (the
+keyless `free:gtx-translate` tier needs zero configuration). The mic pipeline
+activates as soon as you add the local models below.
+
+### 2 · Python runtime for the local engines
+
+The translator looks for python on `PATH`, then `/opt/voxshift/venv/bin/python3`,
+then `/home/z/.venv/bin/python` (first that exists wins). Recommended — a
+single dedicated venv:
+
+```bash
+python3 -m venv /home/z/.venv
+/home/z/.venv/bin/pip install --upgrade pip
+/home/z/.venv/bin/pip install vosk piper-tts faster-whisper numpy soundfile
+```
+
+- `vosk` → local ASR tier. `piper-tts` → local TTS tier.
+- `faster-whisper` → resident English/auto-detect worker (the 75 MB CT2 model
+  ships in the repo at `mini-services/translator-service/whisper-tiny-ct2/` —
+  no download, no HF reachability needed).
+
+### 3 · Local ASR models (vosk — Persian + English)
+
+Directory layout matters: the two model folders sit **directly under**
+`MODELS_ROOT` (no nesting):
+
+```bash
+MODELS_DIR="${VOXSHIFT_MODELS_DIR:-/home/z/models}"
+mkdir -p "$MODELS_DIR" && cd "$MODELS_DIR"
+
+curl -LO https://alphacephei.com/vosk/models/vosk-model-small-fa-0.42.zip
+curl -LO https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip
+unzip -q vosk-model-small-fa-0.42.zip
+unzip -q vosk-model-small-en-us-0.15.zip
+
+# result (verify):
+ls "$MODELS_DIR"
+# vosk-model-small-fa-0.42/  vosk-model-small-en-us-0.15/  (…)
+```
+
+That's the whole Persian-ASR install — `local:vosk-asr` becomes AVAILABLE on
+the next translator restart and serves `fa` with near-perfect accuracy.
+
+### 4 · Local TTS voices (piper — Persian + English + male match)
+
+```bash
+MODELS_DIR="${VOXSHIFT_MODELS_DIR:-/home/z/models}"
+mkdir -p "$MODELS_DIR/piper" && cd "$MODELS_DIR/piper"
+
+# NOTE: the /resolve/v1.0.0/ tag is required — resolve/main 404s.
+BASE=https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0
+
+curl -LO $BASE/fa/fa_IR/amir/medium/fa_IR-amir-medium.onnx
+curl -LO $BASE/fa/fa_IR/amir/medium/fa_IR-amir-medium.onnx.json
+curl -LO $BASE/en/en_US/amy/medium/en_US-amy-medium.onnx
+curl -LO $BASE/en/en_US/amy/medium/en_US-amy-medium.onnx.json
+
+# optional — male-timbre matching voice (used by the timbre-conform path
+# when the enrolled reference reads as low-F0):
+curl -LO $BASE/en/en_US/ryan/high/en_US-ryan-high.onnx
+curl -LO $BASE/en/en_US/ryan/high/en_US-ryan-high.onnx.json
+```
+
+Each `.onnx` **must** have its `.onnx.json` sibling — piper refuses the voice
+without it. Workers are prewarmed per output language and idle-unload after
+4 minutes.
+
+### 5 · Real voice cloning (local engines)
+
+The priority chain is **Fish Speech → F5-TTS → Chatterbox → satellite →
+ElevenLabs → timbre-conformed → pitch-conformed**; the first level whose gates
+(package ✓ · weights ✓ · RAM ✓) pass serves the clone. Two install routes:
+
+**Route A — one-shot installer** (fish + f5, needs ~3 GB free RAM):
+
+```bash
+cd Vox-Shift
+bash scripts/setup-local-clone.sh              # both engines + weights
+#   bash scripts/setup-local-clone.sh --with-fish   # fish only
+#   bash scripts/setup-local-clone.sh --with-f5     # f5 only
+```
+
+The script pins the CPU torch pair (`torch==2.8.0` + `torchaudio==2.8.0` —
+deliberately NOT the fish-speech `pip install -e .` which would downgrade
+torch for every other engine), installs the minimal fish inference deps, and
+snapshot-downloads the `fishaudio/fish-speech-1.5` weights.
+
+**Route B — fully manual** (what the script does, step by step):
+
+```bash
+MODELS_DIR="${VOXSHIFT_MODELS_DIR:-/home/z/models}"
+PY=/home/z/.venv/bin/pip     # your venv pip
+
+# ── F5-TTS ─────────────────────────────────────────────────────────────
+$PY install f5-tts            # weights auto-download from HF (SWivid/F5-TTS)
+                              # on first synthesis — or pre-place them and
+                              # point VOXSHIFT_F5_WEIGHTS at the folder
+
+# ── Fish Speech v1.5.0 ────────────────────────────────────────────────
+git clone --depth 1 --branch v1.5.0 \
+  https://github.com/fishaudio/fish-speech.git "$MODELS_DIR/fish-speech-src"
+$PY install hydra-core einops librosa loguru loralib pyrootutils \
+  "einx[torch]==0.2.2" "vector-quantize-pytorch==1.14.24" tiktoken cachetools \
+  silero-vad pytorch-lightning lightning natsort
+$PY install huggingface_hub
+export MODELS_DIR
+python3 - <<EOF
+from huggingface_hub import snapshot_download
+snapshot_download("fishaudio/fish-speech-1.5",
+    local_dir="${MODELS_DIR}/fish-speech/checkpoints/fish-speech-1.5",
+    allow_patterns=["model.pth", "config.json", "special_tokens.json",
+                    "tokenizer.tiktoken",
+                    "firefly-gan-vq-fsq-8x1024-21hz-generator.pth"])
+EOF
+
+# ── Chatterbox (separate venv! it pins its own torch) ──────────────────
+python3 -m venv /home/z/.venv-chatterbox
+/home/z/.venv-chatterbox/bin/pip install chatterbox-tts
+```
+
+> **Which python?** The clone detector and the clone worker spawn the plain
+> `python3` on the translator's PATH. So install fish/f5 into the interpreter
+> that `python3` resolves to, **or activate the venv before starting the
+> translator** (`source /home/z/.venv/bin/activate`). Chatterbox keeps its own
+> venv — activate that one instead when you want chatterbox to be the detected
+> engine (only one torch tree can own `python3` at a time; the chain re-probes
+> every 30 s). vosk / piper / faster-whisper are more forgiving: their runners
+> also probe `/opt/voxshift/venv` and `/home/z/.venv` directly.
+
+**Resulting layout** (all auto-discovered, env overrides optional):
+
+```
+$MODELS_DIR/
+├── vosk-model-small-fa-0.42/
+├── vosk-model-small-en-us-0.15/
+├── piper/
+│   ├── fa_IR-amir-medium.onnx (+ .onnx.json)
+│   ├── en_US-amy-medium.onnx  (+ .onnx.json)
+│   └── en_US-ryan-high.onnx   (+ .onnx.json)
+├── fish-speech-src/                        # v1.5.0 checkout (tools/inference_engine)
+├── fish-speech/checkpoints/fish-speech-1.5/   # weights
+├── f5-tts/                                 # weights (or HF cache — both probed)
+└── chatterbox/                             # weights (or HF cache — both probed)
+```
+
+**Reference transcripts** (recommended — zero-shot engines condition on them;
+f5 without one pulls a whisper model mid-flight): after enrolling a profile,
+place `<profileId>.txt` next to `<profileId>.wav` in `db/audio/clone-ref/`, or
+set `VOXSHIFT_CLONE_REF_TEXT`.
+
+**Restart the translator** after installing anything — engine detection is
+cached for 30 s, and the About page then shows each level's real gate state
+with an **ACTIVE** badge on the serving engine.
+
+### 6 · Satellite cloning — real engines for a small container
+
+If the app runs on a memory-capped host (Railway ~1 GB slice et al.) but you
+have a RAM-rich machine (your PC, a dedicated server), run the REAL cloning
+engines there and let the app call in over HTTP — no platform upgrade needed:
+
+```bash
+# ── on the RAM-rich machine ────────────────────────────────────────────
+git clone https://github.com/Dani-Devlop/Vox-Shift.git && cd Vox-Shift
+bash scripts/setup-local-clone.sh        # engines + weights (+ chatterbox venv)
+bun mini-services/clone-satellite/server.ts     # listens on :3011
+# env: VOXSATELLITE_PORT / VOXSATELLITE_ENGINES=fish-speech,f5-tts,chatterbox
+#      VOXSATELLITE_ALLOW_ORIGINS=https://your-app-host  (optional CORS)
+
+# expose it: SSH tunnel / Tailscale / ngrok / port-forward, then verify:
+curl http://<your-host>:3011/healthz      # → {"ok":true,"engines":[…]}
+
+# ── on the app host ───────────────────────────────────────────────────
+# .env:
+VOXSHIFT_SATELLITE_CLONE_URL=http://<your-host>:3011
+```
+
+The chain inserts the satellite at priority 4 (before ElevenLabs); results
+are served as REAL clones (`degraded:false`) and every request spawns a
+one-shot worker on the satellite — no resident model RAM there either.
+
+### 7 · Cloud keys (optional)
+
+| Key | Effect |
+| --- | --- |
+| `ELEVENLABS_API_KEY` | **Real cross-language voice cloning** via ElevenLabs IVC — chain level 5. Also enables cloud previews when no local engine is installed. |
+| Built-in `z-ai` legs (ASR · LLM · TTS) | Enabled by the SDK's own config (`/etc/.z-ai-config` or the server environment). Without it the legs report **UNCONFIGURED** honestly and the local + keyless tiers keep the pipeline fully functional. |
+| Custom OpenAI-compatible providers | Settings → Custom providers — encrypted at rest, tried first, auto-failover. |
+
+### 8 · Connecting everything (env-var map)
+
+Add to `.env` what applies to your setup, then restart BOTH processes:
+
+```bash
+DATABASE_URL=file:./db/voxshift.db          # required
+VOXSHIFT_MODELS_DIR=/home/z/models          # only if not the default
+VOXSHIFT_RAM_BUDGET_MB=4000                 # only to override the cgroup probe
+VOXSHIFT_FISH_WEIGHTS=/path/to/weights      # only if outside the default layout
+VOXSHIFT_F5_WEIGHTS=/path/to/weights        # "
+VOXSHIFT_CHATTERBOX_WEIGHTS=/path/to/weights  # "
+VOXSHIFT_CLONE_REF_TEXT="من علی هستم"       # fallback reference transcript
+VOXSHIFT_SATELLITE_CLONE_URL=http://host:3011  # satellite cloning
+VOXSHIFT_WHISPER_MODEL=base                 # optional: better accents/embedded-en
+ELEVENLABS_API_KEY=…                        # optional: cloud cloning
+```
+
+What connects to what, in one line each:
+
+- **vosk models** → auto-found under `$MODELS_DIR` by exact folder name →
+  `local:vosk-asr` (fa primary · en fallback).
+- **whisper** → bundled `whisper-tiny-ct2` + `faster-whisper` pip package →
+  resident worker (English + auto-detect, dual-run with vosk, merged).
+- **piper voices** → auto-found under `$MODELS_DIR/piper/` by exact filename →
+  `local:piper-tts` (fa_IR-amir / en_US-amy / en_US-ryan for male match).
+- **fish/f5/chatterbox** → pip package + weights layout above →
+  `local:voice-cloning` chain levels 1–3.
+- **satellite** → `VOXSHIFT_SATELLITE_CLONE_URL` → chain level 4.
+- **ElevenLabs** → `ELEVENLABS_API_KEY` → chain level 5.
+- **timbre/pitch-conformed DSP** → built in, zero config → levels 6–7
+  (always available; honestly labeled).
+
+### 9 · Verify the whole chain
+
+```bash
+# real engine probes (synthesize through the actual workers):
+bun tests/probe-clone-chain.ts      # gate matrix: package ✓ weights ✓ RAM ✓
+bun tests/probe-clone-synth.ts      # REAL fish/f5 synthesis end-to-end
+bun tests/probe-timbre-conform.ts   # timbre morph objectively measured
+
+# full pipeline integration suite (ASR + translate + TTS + router + history):
+bun tests/integration/run.ts
+```
+
+In the app: **About → Diagnostics → Run self-test** walks every pipeline stage
+live, and the About page's *Engine chains* / *Voice cloning priority chain*
+sections show each level's gate state with the **ACTIVE** engine badged.
+Enroll a voice (Voice Identity → record ~15 s), then **Test my voice** — it
+runs the exact same synthesis chain the realtime pipeline uses.
+
+### 10 · Troubleshooting
+
+| Symptom | Cause → Fix |
+| --- | --- |
+| Clone engine `unavailable — RAM` | The cgroup-aware probe says usable < floor (Fish 2600 / F5 2900 / Chatterbox 2600 MB). Raise the plan/memory, use the **satellite**, or accept the timbre-conformed level. `VOXSHIFT_RAM_BUDGET_MB` overrides when you know better. |
+| Clone engine `unavailable — weights` | Weights not in any probed path → check the layout in step 5, or set `VOXSHIFT_FISH_WEIGHTS` / `VOXSHIFT_F5_WEIGHTS` / `VOXSHIFT_CHATTERBOX_WEIGHTS`. |
+| vosk / piper "runtime not detected" | The python env the translator uses lacks the package. ASR/TTS runners probe `PATH` → `/opt/voxshift/venv` → `/home/z/.venv` (step 2); **clone engines use plain `python3` only** — activate their venv before starting the translator (see the *Which python?* note in step 5). |
+| piper voice download 404s | Use the **`/resolve/v1.0.0/`** URLs (step 4) — `resolve/main` is dead. |
+| First English phrase is slow / whisper boot timeout | `VOXSHIFT_WHISPER_MODEL=base` downloads from HF on first boot (90 s timeout) — keep `tiny` (bundled) for offline hosts. |
+| Clone sounds like a preset, not me | Pre-v3.8 profiles have no reference WAV on disk → **re-enroll once** so the timbre path can match your tone. Clone-mode profiles need ≥ 8 s of clean reference audio. Also give the engine a reference transcript (`<profileId>.txt` in `db/audio/clone-ref/` or `VOXSHIFT_CLONE_REF_TEXT`). |
+| `z-ai config not found` in self-test | Honest UNCONFIGURED label, not a failure — the pipeline serves via local + keyless tiers. Add a cloud key if you want those legs. |
+| ElevenLabs 429 | Provider quota — the router cools the provider down exponentially and fails over; retries are automatic. |
+| Persian text garbled from English audio | Should not happen since v3.6 (ASR-layer detection); if you force `fa` in Settings you bypass auto-detect — leave it on **Auto**. |
+
 ## Engine architecture & failover chain
 
 Every pipeline layer is modular and swappable (`ASREngine`,
@@ -215,6 +526,13 @@ above — winners shipped, losers documented:
 | MT · fa→en | **keyless gtx endpoint** | 425–850 ms, perfect on all 5 test sentences | ✅ stays as the keyless tier |
 | Clone | Fish Speech · F5-TTS | prior CPU benchmark RTF ≈ 24; license constraints | rejected |
 | Clone | Chatterbox (MIT) | PyTorch + multi-GB weights > container budget | rejected — cloud ElevenLabs IVC remains the cloning engine |
+
+> **v3.7/v3.8 update:** the clone verdict above was revisited — Fish Speech
+> v1.5.0 (official surface) and F5-TTS were benchmarked on real CPU hardware
+> and **shipped** as chain levels 1–2 with honest RAM gates (measured floors:
+> Fish 2600 MB, F5 2900 MB, Chatterbox 2600 MB). The table row reflects the
+> original 1 GB-container verdict; the [setup guide](#zero-to-hundred-setup-guide)
+> shows how to run them on capable hosts.
 
 Integration notes for the winner: `engines/whisper-worker.py` (faster-whisper
 tiny int8, English) speaks the same line-JSON stdio protocol as the piper
@@ -271,6 +589,10 @@ in About · Diagnostics → *Run self-test*.
 | `VOXSHIFT_CLONE_REF_TEXT` | optional | Transcript of the enrollment reference (zero-shot engines condition on it; a `.txt` sibling of the WAV wins) |
 
 ## Voice cloning setup (v3.8.0)
+
+> **Full install walkthrough:** see the
+> [Zero-to-hundred setup guide](#zero-to-hundred-setup-guide) above (steps 5–6)
+> — this section is the chain overview.
 
 Clone-mode and voice-match profiles are served by the first AVAILABLE level of
 the priority chain (About · Diagnostics renders it live):
